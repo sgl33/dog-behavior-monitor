@@ -1,0 +1,5 @@
+requests==2.34.2
+ultralytics
+opencv-python
+numpy
+pyyaml

@@ -1,0 +1,27 @@
+services:
+  app:
+    build: .
+    volumes:
+      - ./src:/app/src
+      - ./config.yaml:/app/config.yaml:ro
+      - ./prompt.txt:/app/prompt.txt:ro
+    environment:
+      - LOG_LEVEL=DEBUG
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128
+    group_add:
+      - "991"
+    depends_on:
+      - web
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+    volumes:
+      - ./web:/app
+    ports:
+      - "8972:8972"
+    restart: unless-stopped

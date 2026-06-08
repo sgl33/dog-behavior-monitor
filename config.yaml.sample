@@ -1,0 +1,129 @@
+# --- Streams ---
+
+streams:
+  living_room:
+    name: Living Room
+    rtsp: rtsp://host.docker.internal:8554/living_room
+  playpen:
+    name: Playpen
+    rtsp: rtsp://host.docker.internal:8554/playpen
+
+
+# --- Frame Capture ---
+
+recorder:
+  fps: 5
+  # Frames per second to capture from each stream.
+  # Higher values give the LLM more frames to analyze but use more memory.
+
+  buffer_seconds: 5
+  # Rolling buffer size in seconds. Must be >= llm_endpoint.detection_window.
+
+  offline_alert_seconds: 15.0
+  # Seconds a stream must be unreachable before sending a Telegram alert.
+
+  stale_stream_seconds: 10.0
+  # Seconds without a new frame before the stream connection is treated as lost.
+
+
+# --- YOLO Object Detection ---
+
+yolo_source_model: src/yolo26n.pt
+# Path to the YOLO model weights. Exported to OpenVINO INT8 on first run.
+
+yolo_device: intel:GPU
+# Inference device (e.g. cpu, cuda:0, intel:GPU).
+
+yolo_image_size: 960
+# Input resolution for YOLO. Higher values improve accuracy but increase latency.
+
+detect_interval: 1.0
+# Seconds between YOLO inference runs per camera.
+# If inference takes longer than this interval, a Telegram warning is sent.
+
+
+# --- LLM Behavior Analysis ---
+
+llm_endpoint:
+  openai_compatible_url: http://host.docker.internal:1234/v1
+  # OpenAI-compatible URL of the server.
+  # (Note: replace `localhost` / 127.0.0.1 with `host.docker.internal`)
+
+  model: qwen/qwen3-vl-4b
+  # Model identifier (e.g. qwen/qwen3-vl-4b).
+  # Can be obtained with GET {openai_compatible_url}/models.
+
+  detection_window: 3.0
+  # Lookback window in seconds. A YOLO detection stays "active" within this window,
+  # and frames from this window are sent to the LLM.
+
+  frames_per_camera: 15
+  # Number of frames sent to the LLM per camera with an active detection.
+  # More frames capture more motion detail but slow down prefill.
+  # Should not exceed detection_window * recorder.fps.
+
+  crop_padding: 0.3
+  # Fractional padding added around each YOLO bounding box before cropping.
+
+  max_tokens: 1024
+  # Max tokens the LLM may output.
+  # Increase to 2048 for reasoning models (e.g. Gemma 4).
+
+  cooldown: 3.0
+  # Minimum seconds between LLM calls while a dog is continuously detected.
+
+  slow_threshold: 30.0
+  # LLM inference latency (seconds) above which a Telegram warning is sent.
+
+
+# --- Fallback Detection ---
+# YOLO is the primary detector. If it sees no dog for no_detection_fallback_seconds
+# continuous seconds, the LLM steps in to check for missed detections.
+
+no_detection_fallback_seconds: 10.0
+
+dog_description: a yellow golden retriever
+# Description passed to the LLM: "The dog is {dog_description}."
+
+
+# --- System ---
+
+manager_loop_interval: 1.0
+# Seconds between manager loop ticks.
+
+camera_stale_threshold: 15
+# Seconds since last frame before a camera is shown as stale in /status.
+
+
+# --- Telegram ---
+
+telegram:
+  bot_token: ""
+  # Get this from @BotFather (format: <number>:<string>).
+
+  chat_ids:
+    - 0
+  # Chat IDs to send alerts to. Get yours from @userinfobot.
+
+  alert_threshold: 4
+  # LLM scores range 1–10. An alert is sent when score >= alert_threshold.
+
+  alert_cooldown: 60.0
+  # Minimum seconds between alerts. Bypassed if the score escalates.
+
+  escalation_threshold: 1
+  # Send a new alert within cooldown if score rises by at least this much.
+
+  live_stream_url: "https://192.168.0.2:8971"
+  logs_url: "http://192.168.0.2:8972"
+  # live_stream_url and logs_url are included in alert messages.
+
+
+# --- Web Server ---
+
+web_server:
+  push_url: http://web:8972/push
+  # Internal URL for pushing LLM results to the web dashboard.
+
+  public_url: http://192.168.0.2:8972
+  # Public URL linked in /logs Telegram command.

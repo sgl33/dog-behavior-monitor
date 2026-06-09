@@ -25,10 +25,13 @@ class WebServerClient:
     def push_result(
         self,
         score: int,
+        summary: str,
         description: str,
         ts: datetime,
         frames: list[np.ndarray] | None,
         inference_time: float | None = None,
+        cameras: list[str] | None = None,
+        detected_by: str | None = None,
     ) -> None:
         thumb = None
         if frames:
@@ -46,9 +49,12 @@ class WebServerClient:
                 json={
                     "time": ts.strftime("%H:%M:%S"),
                     "score": score,
+                    "summary": summary,
                     "description": description,
                     "thumb": thumb,
                     "inference_time": inference_time,
+                    "cameras": cameras,
+                    "detected_by": detected_by,
                 },
                 timeout=5,
             ).raise_for_status()

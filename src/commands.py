@@ -94,7 +94,7 @@ def build_commands(
                 mins = int(remaining // 60)
                 secs = int(remaining % 60)
                 return f"Alerts are muted for the next {mins} minutes {secs} seconds. Run /unmute to cancel."
-            return "Alerts are not muted. Run /mute [{hrs}h|{mins}m] to mute."
+            return "Alerts are not muted. Run /mute #h (hours) or /mute #m (minutes) to mute."
         if len(parts) != 2:
             return "Usage: /mute [{hrs}h|{mins}m] (example: `/mute 2h`, `/mute 30m`)"
         arg = parts[1]

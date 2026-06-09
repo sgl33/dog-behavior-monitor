@@ -60,10 +60,13 @@ llm_endpoint:
   # Lookback window in seconds. A YOLO detection stays "active" within this window,
   # and frames from this window are sent to the LLM.
 
-  frames_per_camera: 15
-  # Number of frames sent to the LLM per camera with an active detection.
-  # More frames capture more motion detail but slow down prefill.
-  # Should not exceed detection_window * recorder.fps.
+  frame_sampling:
+    - seconds: 2
+      fps: 3
+    - seconds: 1
+      fps: 1
+  # Tiered frame sampling, most-recent-first. Each tier specifies how many seconds
+  # to look back and at what fps to sample. Total seconds should not exceed detection_window.
 
   crop_padding: 0.3
   # Fractional padding added around each YOLO bounding box before cropping.

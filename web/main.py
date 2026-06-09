@@ -19,9 +19,12 @@ _clients: set[WebSocket] = set()
 class PushPayload(BaseModel):
     time: str
     score: int
+    summary: str | None = None
     description: str
     thumb: str | None = None
     inference_time: float | None = None
+    cameras: list[str] | None = None
+    detected_by: str | None = None
 
 
 @app.get("/")

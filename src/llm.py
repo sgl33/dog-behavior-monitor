@@ -1,7 +1,7 @@
 import base64
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import cv2
@@ -24,7 +24,7 @@ class LLMClient:
         base_url: str,
         model: str,
         dog_description: str,
-        frames_per_camera: int,
+        frame_sampling: list[tuple[float, float]],
         crop_padding: float,
         max_tokens: int,
         token: str | None = None,
@@ -32,7 +32,7 @@ class LLMClient:
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._model = model
         self._dog_description = dog_description
-        self._frames_per_camera = frames_per_camera
+        self._frame_sampling = frame_sampling
         self._crop_padding = crop_padding
         self._max_tokens = max_tokens
         self._headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -48,7 +48,7 @@ class LLMClient:
 
         for camera, frames in frames_by_camera.items():
             boxes = boxes_by_camera.get(camera, [])
-            for ts, frame in _sample(frames, self._frames_per_camera):
+            for ts, frame in _sample_tiered(frames, self._frame_sampling):
                 cropped = _crop(frame, boxes, self._crop_padding) if boxes else frame
                 sampled_frames.append(cropped)
                 content.append({"type": "text", "text": f"{camera} @ {ts.strftime('%H:%M:%S.%f')[:-3]}"})
@@ -121,10 +121,31 @@ def _crop(frame: np.ndarray, boxes: list[tuple[int, int, int, int]], padding: fl
 def _sample(
     frames: list[tuple[datetime, np.ndarray]], n: int
 ) -> list[tuple[datetime, np.ndarray]]:
-    if len(frames) <= n:
+    if not frames or n <= 0 or len(frames) <= n:
         return frames
+    if n == 1:
+        return [frames[-1]]
     indices = [round(i * (len(frames) - 1) / (n - 1)) for i in range(n)]
     return [frames[i] for i in indices]
+
+
+def _sample_tiered(
+    frames: list[tuple[datetime, np.ndarray]],
+    tiers: list[tuple[float, float]],
+) -> list[tuple[datetime, np.ndarray]]:
+    if not frames:
+        return []
+    latest_ts = frames[-1][0]
+    result: list[tuple[datetime, np.ndarray]] = []
+    boundary = latest_ts
+    for seconds, fps in tiers:
+        start = boundary - timedelta(seconds=seconds)
+        bucket = [(ts, f) for ts, f in frames if start <= ts < boundary]
+        n = round(seconds * fps)
+        if n > 0 and bucket:
+            result = _sample(bucket, n) + result
+        boundary = start
+    return result
 
 
 def _encode(frame: np.ndarray) -> str:

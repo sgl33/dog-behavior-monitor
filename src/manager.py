@@ -85,7 +85,7 @@ class Manager(threading.Thread):
             }
             boxes_by_camera = {cam: self._recorders[cam].latest_boxes for cam in cameras}
             fire_time = time.monotonic()
-            threading.Thread(target=self._run_llm, args=(frames_by_camera, boxes_by_camera, fire_time), daemon=True).start()
+            threading.Thread(target=self._run_llm, args=(frames_by_camera, boxes_by_camera, fire_time, "YOLO"), daemon=True).start()
 
     def _run_fallback_check(self, latest_frames: dict[str, np.ndarray]) -> None:
         try:
@@ -100,7 +100,7 @@ class Manager(threading.Thread):
                         cam: self._recorders[cam].get_frames(last_seconds=self._detection_window)
                         for cam in cameras_with_dog
                     }
-                    self._run_llm(frames_by_camera, {}, time.monotonic())
+                    self._run_llm(frames_by_camera, {}, time.monotonic(), "LLM")
             else:
                 logger.debug("Fallback: no dog found")
                 self._llm_busy.clear()
@@ -114,7 +114,7 @@ class Manager(threading.Thread):
                 self._telegram_client.send_system_alert(f"⚠️ Fallback check error: {e}")
             self._llm_busy.clear()
 
-    def _run_llm(self, frames_by_camera: dict[str, list[tuple[datetime, np.ndarray]]], boxes_by_camera: dict[str, list[tuple[int, int, int, int]]], fire_time: float) -> None:
+    def _run_llm(self, frames_by_camera: dict[str, list[tuple[datetime, np.ndarray]]], boxes_by_camera: dict[str, list[tuple[int, int, int, int]]], fire_time: float, detected_by: str = "YOLO") -> None:
         try:
             logger.info("LLM inference started")
             response, frames = self._llm_client.analyze(frames_by_camera, boxes_by_camera)
@@ -133,7 +133,7 @@ class Manager(threading.Thread):
             self._last_result = (score, description, result_time)
             self._last_frames = frames
             if self._web_server is not None:
-                self._web_server.push_result(score, description, result_time, frames, self._last_llm_inference_latency)
+                self._web_server.push_result(score, summary, description, result_time, frames, self._last_llm_inference_latency, list(frames_by_camera.keys()), detected_by)
             logger.info("LLM result: %d - %s (%.2fs)", score, description, self._last_llm_inference_latency)
             if self._llm_error:
                 self._llm_error = False
@@ -176,7 +176,7 @@ class Manager(threading.Thread):
         }
         boxes_by_camera = {cam: self._recorders[cam].latest_boxes for cam in cameras_with_frames}
         fire_time = time.monotonic()
-        threading.Thread(target=self._run_llm, args=(frames_by_camera, boxes_by_camera, fire_time), daemon=True).start()
+        threading.Thread(target=self._run_llm, args=(frames_by_camera, boxes_by_camera, fire_time, "YOLO"), daemon=True).start()
         return "✅ LLM analysis triggered"
 
     def stop(self) -> None:

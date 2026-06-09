@@ -40,7 +40,7 @@ class RecorderConfig:
 class LLMEndpointConfig:
     openai_compatible_url: str
     model: str
-    frames_per_camera: int
+    frame_sampling: list[dict]
     detection_window: float
     crop_padding: float
     max_tokens: int
@@ -171,7 +171,10 @@ def main():
         public_url=config.web_server.public_url,
     )
 
-    video_fps = config.llm_endpoint.frames_per_camera / config.llm_endpoint.detection_window
+    _tiers = config.llm_endpoint.frame_sampling
+    _total_frames = sum(round(t["fps"] * t["seconds"]) for t in _tiers)
+    _total_seconds = sum(t["seconds"] for t in _tiers)
+    video_fps = _total_frames / _total_seconds if _total_seconds > 0 else 5.0
     telegram_client = TelegramClient(
         bot_token=config.telegram.bot_token,
         chat_ids=config.telegram.chat_ids,
@@ -200,7 +203,7 @@ def main():
         model=config.llm_endpoint.model,
         token=config.llm_endpoint.token,
         dog_description=config.dog_description,
-        frames_per_camera=config.llm_endpoint.frames_per_camera,
+        frame_sampling=[(t["seconds"], t["fps"]) for t in config.llm_endpoint.frame_sampling],
         crop_padding=config.llm_endpoint.crop_padding,
         max_tokens=config.llm_endpoint.max_tokens,
     )

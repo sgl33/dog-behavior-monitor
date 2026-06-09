@@ -35,7 +35,8 @@ h1 { font-size: 15px; font-weight: 600; }
 .mid  { color: #d29922; }
 .high { color: #f85149; }
 .time { font-size: 11px; color: #8b949e; margin-left: auto; }
-.latency { font-size: 11px; color: #484f58; }
+.summary { font-size: 13px; color: #c9d1d9; font-weight: 500; margin-bottom: 2px; }
+.detect { font-size: 11px; color: #6e7681; margin-bottom: 3px; }
 .desc {
   font-size: 13px; color: #8b949e; line-height: 1.4;
   overflow: hidden; display: -webkit-box;
@@ -80,6 +81,10 @@ function esc(s) {
 }
 function scoreClass(s) { return s >= 7 ? 'high' : s >= 4 ? 'mid' : 'low'; }
 
+function fmtCamera(cam) {
+  return cam.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
 function addCard(e) {
   if (!populated) { feed.innerHTML = ''; populated = true; }
   const d = document.createElement('div');
@@ -87,17 +92,24 @@ function addCard(e) {
   const img = e.thumb
     ? `<img class="thumb" src="data:image/jpeg;base64,${e.thumb}">`
     : `<div class="no-thumb"></div>`;
-  const latency = e.inference_time != null
-    ? `<span class="latency">${e.inference_time.toFixed(1)}s</span>`
+  const timeStr = e.inference_time != null
+    ? `${esc(e.time)} · ${e.inference_time.toFixed(1)}s`
+    : esc(e.time);
+  const summary = e.summary
+    ? `<p class="summary">${esc(e.summary)}</p>`
+    : '';
+  const detect = (e.cameras && e.cameras.length && e.detected_by)
+    ? `<p class="detect">${e.cameras.map(fmtCamera).join(', ')} ${esc(e.detected_by) === "YOLO" ? "" : "LLM"}</p>`
     : '';
   d.innerHTML = `
     ${img}
     <div class="body">
       <div class="meta">
         <span class="score ${scoreClass(e.score)}">${e.score}</span>
-        ${latency}
-        <span class="time">${esc(e.time)}</span>
+        <span class="time">${timeStr}</span>
       </div>
+      ${summary}
+      ${detect}
       <p class="desc">${esc(e.description)}</p>
     </div>`;
   if (e.thumb) {

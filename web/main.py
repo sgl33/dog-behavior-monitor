@@ -21,6 +21,7 @@ class PushPayload(BaseModel):
     score: int
     description: str
     thumb: str | None = None
+    inference_time: float | None = None
 
 
 @app.get("/")

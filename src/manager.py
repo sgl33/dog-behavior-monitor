@@ -128,17 +128,17 @@ class Manager(threading.Thread):
                 self._telegram_client.send_system_alert(f"✅ LLM inference back to normal: {self._last_llm_inference_latency:.1f}s")
 
             parsed = json.loads(extract_json(response))
-            score, description = parsed["score"], parsed["description"]
+            score, summary, description = parsed["score"], parsed["summary"], parsed["description"]
             result_time = datetime.now()
             self._last_result = (score, description, result_time)
             self._last_frames = frames
             if self._web_server is not None:
-                self._web_server.push_result(score, description, result_time, frames)
+                self._web_server.push_result(score, description, result_time, frames, self._last_llm_inference_latency)
             logger.info("LLM result: %d - %s (%.2fs)", score, description, self._last_llm_inference_latency)
             if self._llm_error:
                 self._llm_error = False
                 self._telegram_client.send_system_alert("✅ LLM recovered")
-            self._telegram_client.send_alert(score, description, frames)
+            self._telegram_client.send_alert(score, summary, description, frames)
         except Exception as e:
             logger.exception("LLM error")
             if not self._llm_error:

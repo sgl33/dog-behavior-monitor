@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import subprocess
@@ -5,6 +6,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -25,6 +27,7 @@ class TelegramClient:
         live_stream_url: str,
         logs_url: str,
         video_fps: float,
+        data_dir: Path,
     ):
         self._url = f"{_API_BASE}/bot{bot_token}"
         self._chat_ids = chat_ids
@@ -37,14 +40,47 @@ class TelegramClient:
         self._last_alert_time = 0.0
         self._last_alert_score = 0
         self._chat_ids_lock = threading.Lock()
+        self._thresholds_path = data_dir / "thresholds.json"
+        self._thresholds: dict[int, int] = self._load_thresholds()
+
+    def _load_thresholds(self) -> dict[int, int]:
+        try:
+            with open(self._thresholds_path) as f:
+                return {int(k): v for k, v in json.load(f).items()}
+        except FileNotFoundError:
+            return {}
+        except Exception:
+            logger.exception("Failed to load thresholds, starting fresh")
+            return {}
+
+    def _save_thresholds(self) -> None:
+        try:
+            self._thresholds_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._thresholds_path, "w") as f:
+                json.dump({str(k): v for k, v in self._thresholds.items()}, f)
+        except Exception:
+            logger.exception("Failed to save thresholds")
+
+    def set_threshold(self, chat_id: int, threshold: int) -> None:
+        with self._chat_ids_lock:
+            self._thresholds[chat_id] = threshold
+            self._save_thresholds()
+        logger.info("Alert threshold for chat %d set to %d", chat_id, threshold)
+
+    def get_threshold(self, chat_id: int) -> int:
+        with self._chat_ids_lock:
+            return self._thresholds.get(chat_id, self._alert_threshold)
 
     def update_chat_ids(self, chat_ids: list[int]) -> None:
         with self._chat_ids_lock:
             self._chat_ids = chat_ids
             logger.info("Telegram chat IDs updated")
 
-    def send_alert(self, score: int, description: str, frames: list[np.ndarray]) -> None:
-        if score < self._alert_threshold:
+    def send_alert(self, score: int, summary: str, description: str, frames: list[np.ndarray]) -> None:
+        with self._chat_ids_lock:
+            chat_ids = list(self._chat_ids)
+            thresholds = {cid: self._thresholds.get(cid, self._alert_threshold) for cid in chat_ids}
+        if not chat_ids or score < min(thresholds.values()):
             return
         now = time.monotonic()
         cooldown_expired = (now - self._last_alert_time) >= self._alert_cooldown
@@ -53,11 +89,11 @@ class TelegramClient:
             return
         self._last_alert_time = now
         self._last_alert_score = score
-        with self._chat_ids_lock:
-            chat_ids = list(self._chat_ids)
-        text = f"{score} - {description}\n\nLive stream: {self._live_stream_url}\nLogs: {self._logs_url}"
+        text = f"{score} - {summary}\n\n{description}\n\nLive stream: {self._live_stream_url}\nLogs: {self._logs_url}"
         video_bytes = _compile_video(frames, self._video_fps)
         for chat_id in chat_ids:
+            if score < thresholds[chat_id]:
+                continue
             requests.post(
                 f"{self._url}/sendVideo",
                 data={"chat_id": chat_id, "caption": text},
@@ -75,10 +111,10 @@ class TelegramClient:
                 timeout=60,
             ).raise_for_status()
 
-    def start_polling(self, commands: dict[str, Callable[[], str | tuple[str, list]]]) -> None:
+    def start_polling(self, commands: dict[str, Callable[[int, str], str | tuple[str, list]]]) -> None:
         threading.Thread(target=self._poll_loop, args=(commands,), daemon=True, name="telegram-poll").start()
 
-    def _poll_loop(self, commands: dict[str, Callable[[], str | tuple[str, list]]]) -> None:
+    def _poll_loop(self, commands: dict[str, Callable[[int, str], str | tuple[str, list]]]) -> None:
         # Discard any pending updates accumulated while offline
         try:
             resp = requests.post(f"{self._url}/getUpdates", json={"offset": -1}, timeout=10)
@@ -102,7 +138,7 @@ class TelegramClient:
                     command = text.split()[0] if text.startswith("/") else ""
                     if chat_id and command in commands:
                         try:
-                            result = commands[command]()
+                            result = commands[command](chat_id, text)
                             if isinstance(result, tuple):
                                 caption, frames = result
                                 requests.post(

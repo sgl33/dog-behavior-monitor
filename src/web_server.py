@@ -28,6 +28,7 @@ class WebServerClient:
         description: str,
         ts: datetime,
         frames: list[np.ndarray] | None,
+        inference_time: float | None = None,
     ) -> None:
         thumb = None
         if frames:
@@ -47,6 +48,7 @@ class WebServerClient:
                     "score": score,
                     "description": description,
                     "thumb": thumb,
+                    "inference_time": inference_time,
                 },
                 timeout=5,
             ).raise_for_status()

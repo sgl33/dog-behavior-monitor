@@ -6,6 +6,8 @@ import cv2
 import numpy as np
 import requests
 
+from config import WebServerConfig
+
 logger = logging.getLogger(__name__)
 
 _THUMB_W = 320
@@ -14,9 +16,9 @@ _THUMB_QUALITY = 70
 
 
 class WebServerClient:
-    def __init__(self, push_url: str, public_url: str):
-        self._push_url = push_url
-        self._public_url = public_url
+    def __init__(self, config: WebServerConfig):
+        self._push_url = config.push_url
+        self._public_url = config.public_url
 
     @property
     def public_url(self) -> str:

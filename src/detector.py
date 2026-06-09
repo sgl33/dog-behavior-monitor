@@ -5,6 +5,7 @@ import time
 import numpy as np
 from ultralytics import YOLO
 
+from config import Config
 from recorder import Recorder
 from state import DogDetectionState
 from telegram import TelegramClient
@@ -20,22 +21,20 @@ class Detector(threading.Thread):
         camera: str,
         recorder: Recorder,
         state: DogDetectionState,
-        detect_interval: float,
         model: YOLO,
         model_lock: threading.Lock,
-        device: str,
-        image_size: int,
         telegram_client: TelegramClient,
+        config: Config,
     ):
         super().__init__(daemon=True, name=f"detector-{camera}")
         self.camera = camera
         self._recorder = recorder
         self._state = state
-        self._detect_interval = detect_interval
+        self._detect_interval = config.detect_interval
         self._model = model
         self._model_lock = model_lock
-        self._device = device
-        self._image_size = image_size
+        self._device = config.yolo_device
+        self._image_size = config.yolo_image_size
         self._telegram_client = telegram_client
         self._stop_event = threading.Event()
 

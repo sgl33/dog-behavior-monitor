@@ -1,15 +1,16 @@
 from collections.abc import Callable
 from datetime import datetime
 
+from config import Config
 from manager import Manager
 from recorder import Recorder
 from telegram import TelegramClient
 from web_server import WebServerClient
 
 CommandMap = dict[
-    str, 
+    str,
     Callable[
-        [int, str], 
+        [int, str],
         str | tuple[str, list]
     ]
 ]
@@ -20,9 +21,10 @@ def build_commands(
     manager: Manager,
     recorders: dict[str, Recorder],
     web_client: WebServerClient,
-    camera_stale_threshold: int,
-    live_stream_url: str,
+    config: Config,
 ) -> CommandMap:
+    camera_stale_threshold = config.camera_stale_threshold
+    live_stream_url = config.telegram.live_stream_url
     def status_fn(_chat_id: int, _text: str) -> str:
         now = datetime.now()
         lines = ["📷 Cameras:"]

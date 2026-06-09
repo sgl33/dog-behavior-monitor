@@ -6,6 +6,7 @@ from datetime import datetime
 
 import numpy as np
 
+from config import Config
 from llm import LLMClient, extract_json
 from recorder import Recorder
 from state import DogDetectionState
@@ -24,11 +25,7 @@ class Manager(threading.Thread):
         llm_client: LLMClient,
         telegram_client: TelegramClient,
         web_server: WebServerClient | None,
-        detection_window: float,
-        llm_cooldown: float,
-        loop_interval: float,
-        slow_threshold: float,
-        no_detection_interval: float,
+        config: Config,
     ):
         super().__init__(daemon=True, name="manager")
         self._cameras = cameras
@@ -37,11 +34,11 @@ class Manager(threading.Thread):
         self._llm_client = llm_client
         self._telegram_client = telegram_client
         self._web_server = web_server
-        self._detection_window = detection_window
-        self._llm_cooldown = llm_cooldown
-        self._loop_interval = loop_interval
-        self._slow_threshold = slow_threshold
-        self._no_detection_interval = no_detection_interval
+        self._detection_window = config.llm_endpoint.detection_window
+        self._llm_cooldown = config.llm_endpoint.cooldown
+        self._loop_interval = config.manager_loop_interval
+        self._slow_threshold = config.llm_endpoint.slow_threshold
+        self._no_detection_interval = config.no_detection_fallback_seconds
         self._llm_busy = threading.Event()
         self._last_llm_time = 0.0
         self._last_llm_inference_latency: float | None = None

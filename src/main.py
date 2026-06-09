@@ -1,18 +1,15 @@
 import logging
 import os
 import time
-from dataclasses import dataclass, field
-
 from pathlib import Path
-
-import yaml
-
 import threading
 
 import numpy as np
+import yaml
 from ultralytics import YOLO
 
 from commands import build_commands
+from config import Config, load_config
 from detector import Detector
 from llm import LLMClient
 from manager import Manager
@@ -20,91 +17,6 @@ from recorder import Recorder
 from state import DogDetectionState
 from telegram import TelegramClient
 from web_server import WebServerClient
-
-
-@dataclass
-class StreamConfig:
-    name: str
-    rtsp: str
-
-
-@dataclass
-class RecorderConfig:
-    fps: int
-    buffer_seconds: int
-    offline_alert_seconds: float
-    stale_stream_seconds: float
-
-
-@dataclass
-class LLMEndpointConfig:
-    openai_compatible_url: str
-    model: str
-    frame_sampling: list[dict]
-    detection_window: float
-    crop_padding: float
-    max_tokens: int
-    cooldown: float
-    slow_threshold: float
-    token: str | None = None
-
-
-@dataclass
-class WebServerConfig:
-    push_url: str
-    public_url: str
-
-
-@dataclass
-class TelegramConfig:
-    bot_token: str
-    chat_ids: list[int]
-    alert_threshold: int
-    alert_cooldown: float
-    escalation_threshold: int
-    live_stream_url: str
-    logs_url: str
-
-
-@dataclass
-class Config:
-    streams: dict[str, StreamConfig]
-    recorder: RecorderConfig
-    llm_endpoint: LLMEndpointConfig
-    telegram: TelegramConfig
-    web_server: WebServerConfig
-    detect_interval: float
-    manager_loop_interval: float
-    camera_stale_threshold: int
-    yolo_source_model: Path
-    yolo_device: str
-    yolo_image_size: int
-    dog_description: str
-    no_detection_fallback_seconds: float
-    yolo_model_path: Path = field(init=False)
-
-    def __post_init__(self) -> None:
-        self.yolo_model_path = self.yolo_source_model.parent / f"{self.yolo_source_model.stem}_int8_openvino_model"
-
-
-def load_config(path: Path) -> Config:
-    with open(path) as f:
-        raw = yaml.safe_load(f)
-    return Config(
-        streams={k: StreamConfig(**v) for k, v in raw["streams"].items()},
-        recorder=RecorderConfig(**raw["recorder"]),
-        llm_endpoint=LLMEndpointConfig(**raw["llm_endpoint"]),
-        telegram=TelegramConfig(**raw["telegram"]),
-        web_server=WebServerConfig(**raw["web_server"]),
-        detect_interval=raw["detect_interval"],
-        manager_loop_interval=raw["manager_loop_interval"],
-        camera_stale_threshold=raw["camera_stale_threshold"],
-        yolo_source_model=path.parent / raw["yolo_source_model"],
-        yolo_device=raw["yolo_device"],
-        yolo_image_size=raw["yolo_image_size"],
-        dog_description=raw["dog_description"],
-        no_detection_fallback_seconds=raw["no_detection_fallback_seconds"],
-    )
 
 
 def ensure_model_exported(config: Config) -> None:
@@ -166,23 +78,14 @@ def main():
     )
     model_lock = threading.Lock()
 
-    web_client = WebServerClient(
-        push_url=config.web_server.push_url,
-        public_url=config.web_server.public_url,
-    )
+    web_client = WebServerClient(config.web_server)
 
     _tiers = config.llm_endpoint.frame_sampling
     _total_frames = sum(round(t["fps"] * t["seconds"]) for t in _tiers)
     _total_seconds = sum(t["seconds"] for t in _tiers)
     video_fps = _total_frames / _total_seconds if _total_seconds > 0 else 5.0
     telegram_client = TelegramClient(
-        bot_token=config.telegram.bot_token,
-        chat_ids=config.telegram.chat_ids,
-        alert_threshold=config.telegram.alert_threshold,
-        alert_cooldown=config.telegram.alert_cooldown,
-        escalation_threshold=config.telegram.escalation_threshold,
-        live_stream_url=config.telegram.live_stream_url,
-        logs_url=config.telegram.logs_url,
+        config=config.telegram,
         video_fps=video_fps,
         data_dir=Path(__file__).parent.parent / "data",
     )
@@ -191,33 +94,20 @@ def main():
             camera=camera,
             rtsp_url=stream.rtsp,
             telegram_client=telegram_client,
-            fps=config.recorder.fps,
-            buffer_seconds=config.recorder.buffer_seconds,
-            offline_alert_seconds=config.recorder.offline_alert_seconds,
-            stale_stream_seconds=config.recorder.stale_stream_seconds,
+            config=config.recorder,
         )
         for camera, stream in config.streams.items()
     }
-    llm_client = LLMClient(
-        base_url=config.llm_endpoint.openai_compatible_url,
-        model=config.llm_endpoint.model,
-        token=config.llm_endpoint.token,
-        dog_description=config.dog_description,
-        frame_sampling=[(t["seconds"], t["fps"]) for t in config.llm_endpoint.frame_sampling],
-        crop_padding=config.llm_endpoint.crop_padding,
-        max_tokens=config.llm_endpoint.max_tokens,
-    )
+    llm_client = LLMClient(config=config.llm_endpoint, dog_description=config.dog_description)
     detectors = {
         camera: Detector(
             camera=camera,
             recorder=recorders[camera],
             state=state,
-            detect_interval=config.detect_interval,
             model=model,
             model_lock=model_lock,
-            device=config.yolo_device,
-            image_size=config.yolo_image_size,
             telegram_client=telegram_client,
+            config=config,
         )
         for camera in cameras
     }
@@ -228,11 +118,7 @@ def main():
         llm_client=llm_client,
         telegram_client=telegram_client,
         web_server=web_client,
-        detection_window=config.llm_endpoint.detection_window,
-        llm_cooldown=config.llm_endpoint.cooldown,
-        loop_interval=config.manager_loop_interval,
-        slow_threshold=config.llm_endpoint.slow_threshold,
-        no_detection_interval=config.no_detection_fallback_seconds,
+        config=config,
     )
 
     def _watch_config(path: Path) -> None:
@@ -258,8 +144,7 @@ def main():
         manager=manager,
         recorders=recorders,
         web_client=web_client,
-        camera_stale_threshold=config.camera_stale_threshold,
-        live_stream_url=config.telegram.live_stream_url,
+        config=config,
     ))
 
     for r in recorders.values():

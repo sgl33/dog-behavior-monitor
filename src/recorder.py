@@ -10,6 +10,7 @@ os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
 import cv2
 import numpy as np
 
+from config import RecorderConfig
 from telegram import TelegramClient
 
 logger = logging.getLogger(__name__)
@@ -21,19 +22,16 @@ class Recorder(threading.Thread):
         camera: str,
         rtsp_url: str,
         telegram_client: TelegramClient,
-        fps: int,
-        buffer_seconds: int,
-        offline_alert_seconds: float,
-        stale_stream_seconds: float,
+        config: RecorderConfig,
     ):
         super().__init__(daemon=True, name=f"recorder-{camera}")
         self.camera = camera
         self._rtsp_url = rtsp_url
         self._telegram_client = telegram_client
-        self._fps = fps
-        self._offline_alert_seconds = offline_alert_seconds
-        self._stale_stream_seconds = stale_stream_seconds
-        self._buffer: deque[tuple[datetime, np.ndarray]] = deque(maxlen=fps * buffer_seconds)
+        self._fps = config.fps
+        self._offline_alert_seconds = config.offline_alert_seconds
+        self._stale_stream_seconds = config.stale_stream_seconds
+        self._buffer: deque[tuple[datetime, np.ndarray]] = deque(maxlen=config.fps * config.buffer_seconds)
         self._lock = threading.Lock()
         self._latest_boxes: list[tuple[int, int, int, int]] = []
         self._stop_event = threading.Event()

@@ -8,6 +8,8 @@ import cv2
 import numpy as np
 import requests
 
+from config import LLMEndpointConfig
+
 _JPEG_QUALITY = 85
 _LLM_MAX_WIDTH = 640
 _LLM_MAX_HEIGHT = 360
@@ -19,23 +21,14 @@ _DETECT_PROMPT = (
 
 
 class LLMClient:
-    def __init__(
-        self,
-        base_url: str,
-        model: str,
-        dog_description: str,
-        frame_sampling: list[tuple[float, float]],
-        crop_padding: float,
-        max_tokens: int,
-        token: str | None = None,
-    ):
-        self._url = f"{base_url.rstrip('/')}/chat/completions"
-        self._model = model
+    def __init__(self, config: LLMEndpointConfig, dog_description: str):
+        self._url = f"{config.openai_compatible_url.rstrip('/')}/chat/completions"
+        self._model = config.model
         self._dog_description = dog_description
-        self._frame_sampling = frame_sampling
-        self._crop_padding = crop_padding
-        self._max_tokens = max_tokens
-        self._headers = {"Authorization": f"Bearer {token}"} if token else {}
+        self._frame_sampling = [(t["seconds"], t["fps"]) for t in config.frame_sampling]
+        self._crop_padding = config.crop_padding
+        self._max_tokens = config.max_tokens
+        self._headers = {"Authorization": f"Bearer {config.token}"} if config.token else {}
 
     def analyze(
         self,

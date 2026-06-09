@@ -12,6 +12,8 @@ import cv2
 import numpy as np
 import requests
 
+from config import TelegramConfig
+
 logger = logging.getLogger(__name__)
 
 _API_BASE = "https://api.telegram.org"
@@ -19,23 +21,17 @@ _VIDEO_SIZE = (960, 540)
 class TelegramClient:
     def __init__(
         self,
-        bot_token: str,
-        chat_ids: list[int],
-        alert_threshold: int,
-        alert_cooldown: float,
-        escalation_threshold: int,
-        live_stream_url: str,
-        logs_url: str,
+        config: TelegramConfig,
         video_fps: float,
         data_dir: Path,
     ):
-        self._url = f"{_API_BASE}/bot{bot_token}"
-        self._chat_ids = chat_ids
-        self._alert_threshold = alert_threshold
-        self._alert_cooldown = alert_cooldown
-        self._escalation_threshold = escalation_threshold
-        self._live_stream_url = live_stream_url
-        self._logs_url = logs_url
+        self._url = f"{_API_BASE}/bot{config.bot_token}"
+        self._chat_ids = config.chat_ids
+        self._alert_threshold = config.alert_threshold
+        self._alert_cooldown = config.alert_cooldown
+        self._escalation_threshold = config.escalation_threshold
+        self._live_stream_url = config.live_stream_url
+        self._logs_url = config.logs_url
         self._video_fps = video_fps
         self._last_alert_time = 0.0
         self._last_alert_score = 0

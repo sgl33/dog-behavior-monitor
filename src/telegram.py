@@ -42,6 +42,9 @@ class TelegramClient:
         self._chat_ids_lock = threading.Lock()
         self._thresholds_path = data_dir / "thresholds.json"
         self._thresholds: dict[int, int] = self._load_thresholds()
+        self._sysalert_disabled_path = data_dir / "sysalert_disabled.json"
+        self._sysalert_disabled: set[int] = self._load_sysalert_disabled()
+        self._mute_until: dict[int, float] = {}
 
     def _load_thresholds(self) -> dict[int, int]:
         try:
@@ -61,6 +64,37 @@ class TelegramClient:
         except Exception:
             logger.exception("Failed to save thresholds")
 
+    def _load_sysalert_disabled(self) -> set[int]:
+        try:
+            with open(self._sysalert_disabled_path) as f:
+                return set(json.load(f))
+        except FileNotFoundError:
+            return set()
+        except Exception:
+            logger.exception("Failed to load sysalert prefs, starting fresh")
+            return set()
+
+    def _save_sysalert_disabled(self) -> None:
+        try:
+            self._sysalert_disabled_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._sysalert_disabled_path, "w") as f:
+                json.dump(list(self._sysalert_disabled), f)
+        except Exception:
+            logger.exception("Failed to save sysalert prefs")
+
+    def set_sysalert(self, chat_id: int, enabled: bool) -> None:
+        with self._chat_ids_lock:
+            if enabled:
+                self._sysalert_disabled.discard(chat_id)
+            else:
+                self._sysalert_disabled.add(chat_id)
+            self._save_sysalert_disabled()
+        logger.info("System alerts for chat %d set to %s", chat_id, enabled)
+
+    def get_sysalert(self, chat_id: int) -> bool:
+        with self._chat_ids_lock:
+            return chat_id not in self._sysalert_disabled
+
     def set_threshold(self, chat_id: int, threshold: int) -> None:
         with self._chat_ids_lock:
             self._thresholds[chat_id] = threshold
@@ -71,6 +105,20 @@ class TelegramClient:
         with self._chat_ids_lock:
             return self._thresholds.get(chat_id, self._alert_threshold)
 
+    def mute(self, chat_id: int, seconds: float) -> None:
+        with self._chat_ids_lock:
+            self._mute_until[chat_id] = time.monotonic() + seconds
+        logger.info("Alerts muted for chat %d for %.0fs", chat_id, seconds)
+
+    def unmute(self, chat_id: int) -> None:
+        with self._chat_ids_lock:
+            self._mute_until.pop(chat_id, None)
+        logger.info("Alerts unmuted for chat %d", chat_id)
+
+    def mute_remaining(self, chat_id: int) -> float:
+        with self._chat_ids_lock:
+            return max(0.0, self._mute_until.get(chat_id, 0.0) - time.monotonic())
+
     def update_chat_ids(self, chat_ids: list[int]) -> None:
         with self._chat_ids_lock:
             self._chat_ids = chat_ids
@@ -78,7 +126,8 @@ class TelegramClient:
 
     def send_alert(self, score: int, summary: str, description: str, frames: list[np.ndarray]) -> None:
         with self._chat_ids_lock:
-            chat_ids = list(self._chat_ids)
+            now = time.monotonic()
+            chat_ids = [cid for cid in self._chat_ids if self._mute_until.get(cid, 0.0) <= now]
             thresholds = {cid: self._thresholds.get(cid, self._alert_threshold) for cid in chat_ids}
         if not chat_ids or score < min(thresholds.values()):
             return
@@ -103,7 +152,11 @@ class TelegramClient:
 
     def send_system_alert(self, description: str) -> None:
         with self._chat_ids_lock:
-            chat_ids = list(self._chat_ids)
+            now = time.monotonic()
+            chat_ids = [
+                cid for cid in self._chat_ids
+                if cid not in self._sysalert_disabled and self._mute_until.get(cid, 0.0) <= now
+            ]
         for chat_id in chat_ids:
             requests.post(
                 f"{self._url}/sendMessage",

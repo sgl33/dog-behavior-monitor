@@ -2,7 +2,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+
 from pathlib import Path
 
 import yaml
@@ -12,6 +12,7 @@ import threading
 import numpy as np
 from ultralytics import YOLO
 
+from commands import build_commands
 from detector import Detector
 from llm import LLMClient
 from manager import Manager
@@ -231,55 +232,6 @@ def main():
         no_detection_interval=config.no_detection_fallback_seconds,
     )
 
-    def status_fn(_chat_id: int, _text: str) -> str:
-        now = datetime.now()
-        lines = ["📷 Cameras:"]
-        for camera, recorder in recorders.items():
-            ts = recorder.last_frame_time()
-            if ts is None:
-                lines.append(f"• {camera}: ⚫ no frames yet")
-            else:
-                age = (now - ts).total_seconds()
-                icon = "🟢" if age < config.camera_stale_threshold else "🔴"
-                lines.append(f"• {camera}: {icon} last frame {age:.0f}s ago")
-        latency = manager.last_llm_inference_latency
-        lines.append("")
-        lines.append(f"⏱ LLM latency: {latency:.1f}s" if latency is not None else "⏱ LLM latency: N/A")
-        return "\n".join(lines)
-
-    def last_fn(_chat_id: int, _text: str) -> str | tuple[str, list]:
-        result = manager.last_result
-        if result is None:
-            return "No LLM output yet."
-        score, description, ts = result
-        age = (datetime.now() - ts).total_seconds()
-        if age < 60:
-            age_str = f"{age:.0f}s ago"
-        elif age < 3600:
-            age_str = f"{age / 60:.0f}m ago"
-        else:
-            age_str = f"{age / 3600:.1f}h ago"
-        caption = f"[{age_str}] {score}: {description} (took {manager._last_llm_inference_latency:.2f} sec)"
-        frames = manager.last_frames
-        if frames:
-            return caption, frames
-        return caption
-
-    def score_fn(chat_id: int, text: str) -> str:
-        parts = text.split()
-        if len(parts) == 1:
-            return f"Your alert threshold is {telegram_client.get_threshold(chat_id)}. Run /score [0-10] to change it."
-        elif len(parts) > 2:
-            return "Usage: /score [0-10]"
-        try:
-            threshold = int(parts[1])
-        except ValueError:
-            return "Usage: /score [0-10]"
-        if not (0 <= threshold <= 10):
-            return "Threshold must be between 0 and 10."
-        telegram_client.set_threshold(chat_id, threshold)
-        return f"Your alert threshold is now {threshold}."
-
     def _watch_config(path: Path) -> None:
         last_mtime = path.stat().st_mtime
         while True:
@@ -298,16 +250,14 @@ def main():
     config_path = Path(__file__).parent.parent / "config.yaml"
     threading.Thread(target=_watch_config, args=(config_path,), daemon=True, name="config-watcher").start()
 
-    def logs_fn(_chat_id: int, _text: str) -> str:
-        return f"📊 Live LLM feed:\n{web_client.public_url}"
-
-    telegram_client.start_polling({
-        "/status": status_fn,
-        "/last": last_fn,
-        "/now": lambda _cid, _txt: manager.trigger_now(),
-        "/logs": logs_fn,
-        "/score": score_fn,
-    })
+    telegram_client.start_polling(build_commands(
+        telegram_client=telegram_client,
+        manager=manager,
+        recorders=recorders,
+        web_client=web_client,
+        camera_stale_threshold=config.camera_stale_threshold,
+        live_stream_url=config.telegram.live_stream_url,
+    ))
 
     for r in recorders.values():
         r.start()

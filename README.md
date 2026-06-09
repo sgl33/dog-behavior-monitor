@@ -43,6 +43,20 @@ When you're ready, use Docker Compose to start the application. For example:
 docker compose up --build -d
 ```
 
+The web interface is hosted on port 8972 by default. You can use the following Telegram commands:
+```
+status - Get cameras status
+last - Get most recent analysis result
+logs - Get URL to view previous analysis results
+live - Get URL to view live video streams
+score - Set alert score threshold
+sysalert - Enable/disable system alerts
+mute - Temporarily mute alerts
+unmute - Resume receiving alerts
+```
+
+You can also copy-paste this to BotFather.
+
 ## Other
 
 ### Disclaimer

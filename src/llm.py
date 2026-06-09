@@ -27,6 +27,7 @@ class LLMClient:
         frames_per_camera: int,
         crop_padding: float,
         max_tokens: int,
+        token: str | None = None,
     ):
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._model = model
@@ -34,6 +35,7 @@ class LLMClient:
         self._frames_per_camera = frames_per_camera
         self._crop_padding = crop_padding
         self._max_tokens = max_tokens
+        self._headers = {"Authorization": f"Bearer {token}"} if token else {}
 
     def analyze(
         self,
@@ -57,6 +59,7 @@ class LLMClient:
 
         response = requests.post(
             self._url,
+            headers=self._headers,
             json={
                 "model": self._model,
                 "messages": [{"role": "user", "content": content}],
@@ -77,10 +80,11 @@ class LLMClient:
             })
         response = requests.post(
             self._url,
+            headers=self._headers,
             json={
                 "model": self._model,
                 "messages": [{"role": "user", "content": content}],
-                "max_tokens": 256,
+                "max_tokens": self._max_tokens,
             },
             timeout=30,
         )

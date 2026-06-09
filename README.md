@@ -2,7 +2,7 @@
 
 ## Introduction
 
-This is a small personal project for detecting dog behavior using RTSP-supported home security cameras, YOLO object detection, and local LLM. If suspicious behavior (e.g. destructive behavior, zoomies) is detected.
+This is a small personal project for detecting dog behavior using RTSP-supported home security cameras, YOLO object detection, and local LLM. If suspicious behavior (e.g. destructive behavior, zoomies) is detected, it sends an alert to your Telegram account(s).
 
 ## Architecture
 
@@ -28,6 +28,7 @@ Copy `config.yaml.sample` to `config.yaml` and modify it, including but not limi
 - `yolo_device`: set to Intel iGPU by default
 - `llm_endpoint.openai_compatible_url` if you're not running LM Studio server on the same device
 - `llm_endpoint.model`
+    - If you're using a reasoning model, you will likely need to increase `max_tokens` to 2-4K or more
 - `dog_description`
 - Under `telegram`: 
     - `bot_token` from @BotFather
@@ -56,9 +57,13 @@ This project was developed specifically for my home server configuration:
     - Models are running on a more powerful GPU on a different device via LM Link (either RTX 5070 Ti mobile, RTX 5090 desktop, or M5 Max)
 - Connected to other personal devices with Tailscale
 
-With RTX 5070 Ti mobile (good balance between power draw and performance for smaller models), you get around 3 seconds for LLM inference when using 4-bit quantization for Qwen3 VL 4B. YOLO inference is done using the Intel iGPU and takes around 100ms per frame.
-
 This project was not developed with other devices in mind and might not work for you out-of-the-box. You may need to modify the source code for this to work on your device; do it at your own risk.
+
+Tips if you do want to use this app directly:
+
+- Find a model that works best for you. Bigger models and reasoning models may be more accurate but are slower.
+- Through trial and error, find configuration and prompt that works best for your dog and home.
+- Make sure to test thoroughly to minimize inaccuracies.
 
 ### Limitations
 

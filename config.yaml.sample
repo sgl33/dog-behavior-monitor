@@ -53,6 +53,9 @@ llm_endpoint:
   # Model identifier (e.g. qwen/qwen3-vl-4b).
   # Can be obtained with GET {openai_compatible_url}/models.
 
+  token: fake-token
+  # Authentication token. If not required, put random gibberish
+
   detection_window: 3.0
   # Lookback window in seconds. A YOLO detection stays "active" within this window,
   # and frames from this window are sent to the LLM.

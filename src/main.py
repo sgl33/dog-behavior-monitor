@@ -45,6 +45,7 @@ class LLMEndpointConfig:
     max_tokens: int
     cooldown: float
     slow_threshold: float
+    token: str | None = None
 
 
 @dataclass
@@ -196,6 +197,7 @@ def main():
     llm_client = LLMClient(
         base_url=config.llm_endpoint.openai_compatible_url,
         model=config.llm_endpoint.model,
+        token=config.llm_endpoint.token,
         dog_description=config.dog_description,
         frames_per_camera=config.llm_endpoint.frames_per_camera,
         crop_padding=config.llm_endpoint.crop_padding,

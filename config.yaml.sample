@@ -45,26 +45,21 @@ detect_interval: 1.0
 # --- LLM Behavior Analysis ---
 
 llm_endpoint:
-  openai_compatible_url: http://host.docker.internal:1234/v1
-  # OpenAI-compatible URL of the server.
-  # (Note: replace `localhost` / 127.0.0.1 with `host.docker.internal`)
+  vision_model: qwen/qwen3-vl-4b
+  vision_url: http://host.docker.internal:1234/v1
+  vision_token: fake-token
+  # Multimodal model for frame analysis and dog detection. Minimum 64K context.
+  # (Use host.docker.internal instead of localhost inside Docker)
 
-  model: qwen/qwen3-vl-4b
-  # Model identifier (e.g. qwen/qwen3-vl-4b).
-  # Can be obtained with GET {openai_compatible_url}/models.
-  # Model should have at least 64K context
+  fast_model: your-fast-model
+  fast_url: https://openrouter.ai/api/v1
+  fast_token: your-token
+  # Fast text model for minute summaries and query triage. Minimum 32K context.
 
-  query_model: openrouter/free
-  # Model identifier for `/ask` command.
-  # Can be the same model as the vision model, but not recommended.
-
-  # query_url: https://openrouter.ai/api/v1
-  # Optional separate OpenAI-compatible URL for the query model. Defaults to openai_compatible_url.
-
-  # query_token: fake-token
-  # Optional separate token for the query endpoint. Defaults to token.
-
-  token: fake-token
+  memory_model: your-memory-model
+  memory_url: https://openrouter.ai/api/v1
+  memory_token: your-token
+  # Conversational query model. Minimum 128K context, 192K recommended.
   # Authentication token. If not required, put random gibberish
 
   detection_window: 3.0

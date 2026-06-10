@@ -14,6 +14,7 @@ templates = Jinja2Templates(directory="templates")
 
 _history: deque = deque(maxlen=100)
 _clients: set[WebSocket] = set()
+_camera_status: dict[str, bool] = {}
 
 
 class PushPayload(BaseModel):
@@ -27,6 +28,10 @@ class PushPayload(BaseModel):
     detected_by: str | None = None
 
 
+class CameraStatusPayload(BaseModel):
+    status: dict[str, bool]
+
+
 @app.get("/")
 async def index(request: Request):
     return templates.TemplateResponse(request, "index.html")
@@ -36,7 +41,15 @@ async def index(request: Request):
 async def push(payload: PushPayload):
     entry = payload.model_dump()
     _history.append(entry)
-    await _broadcast(entry)
+    await _broadcast({"type": "result", "entry": entry})
+    return JSONResponse({"ok": True})
+
+
+@app.post("/push_cameras")
+async def push_cameras(payload: CameraStatusPayload):
+    global _camera_status
+    _camera_status = payload.status
+    await _broadcast({"type": "cameras", "status": _camera_status})
     return JSONResponse({"ok": True})
 
 
@@ -49,6 +62,11 @@ async def ws_endpoint(websocket: WebSocket):
             "type": "history",
             "entries": list(_history),
         }))
+        if _camera_status:
+            await websocket.send_text(json.dumps({
+                "type": "cameras",
+                "status": _camera_status,
+            }))
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
@@ -57,12 +75,12 @@ async def ws_endpoint(websocket: WebSocket):
         _clients.discard(websocket)
 
 
-async def _broadcast(entry: dict) -> None:
+async def _broadcast(msg: dict) -> None:
     dead: set[WebSocket] = set()
-    msg = json.dumps({"type": "result", "entry": entry})
+    text = json.dumps(msg)
     for ws in list(_clients):
         try:
-            await ws.send_text(msg)
+            await ws.send_text(text)
         except Exception:
             dead.add(ws)
     _clients.difference_update(dead)

@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 import threading
 
@@ -104,7 +105,6 @@ def main():
         data_dir=Path(__file__).parent.parent / "data",
         llm_client=llm_client,
         dog_name=config.dog_name,
-        query_model=config.llm_endpoint.query_model,
     )
     detectors = {
         camera: Detector(
@@ -141,17 +141,36 @@ def main():
                 new_config = load_config(path)
                 telegram_client.update_chat_ids(new_config.telegram.chat_ids)
                 logger.info("Reloaded chat_ids from config: %s", new_config.telegram.chat_ids)
-                llm_client.set_model(new_config.llm_endpoint.model)
-                logger.info("Reloaded LLM model: %s", new_config.llm_endpoint.model)
-                llm_client.set_query_endpoint(new_config.llm_endpoint.query_url, new_config.llm_endpoint.query_token)
-                logger.info("Reloaded query endpoint: url=%s", new_config.llm_endpoint.query_url)
-                llm_logger.set_query_model(new_config.llm_endpoint.query_model)
-                logger.info("Reloaded query model: %s", new_config.llm_endpoint.query_model)
+                ep = new_config.llm_endpoint
+                llm_client.set_vision_model(ep.vision_model)
+                llm_client.set_vision_endpoint(ep.vision_url, ep.vision_token)
+                llm_client.set_fast_model(ep.fast_model)
+                llm_client.set_fast_endpoint(ep.fast_url, ep.fast_token)
+                llm_client.set_memory_model(ep.memory_model)
+                llm_client.set_memory_endpoint(ep.memory_url, ep.memory_token)
+                logger.info("Reloaded models: vision=%s fast=%s memory=%s", ep.vision_model, ep.fast_model, ep.memory_model)
             except Exception:
                 logger.exception("Failed to reload config")
 
+    def _push_camera_status() -> None:
+        while True:
+            time.sleep(3)
+            try:
+                now = datetime.now()
+                statuses = {
+                    cam: (
+                        (now - rec.last_frame_time()).total_seconds() <= config.camera_stale_threshold
+                        if rec.last_frame_time() else False
+                    )
+                    for cam, rec in recorders.items()
+                }
+                web_client.push_camera_status(statuses)
+            except Exception:
+                logger.exception("Failed to push camera status")
+
     config_path = Path(__file__).parent.parent / "config.yaml"
     threading.Thread(target=_watch_config, args=(config_path,), daemon=True, name="config-watcher").start()
+    threading.Thread(target=_push_camera_status, daemon=True, name="camera-status").start()
 
     telegram_client.start_polling(build_commands(
         telegram_client=telegram_client,

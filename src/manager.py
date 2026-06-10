@@ -47,7 +47,9 @@ class Manager(threading.Thread):
         self._last_llm_inference_latency: float | None = None
         self._llm_slow = False
         self._llm_error = False
+        self._llm_consecutive_errors = 0
         self._fallback_error = False
+        self._fallback_consecutive_errors = 0
         self._last_result: tuple[int, str, datetime] | None = None
         self._last_frames: list[np.ndarray] | None = None
         self._stop_event = threading.Event()
@@ -106,10 +108,12 @@ class Manager(threading.Thread):
                 self._llm_busy.clear()
             if self._fallback_error:
                 self._fallback_error = False
+                self._fallback_consecutive_errors = 0
                 self._telegram_client.send_system_alert("✅ Fallback LLM recovered")
         except Exception as e:
             logger.exception("Fallback check error")
-            if not self._fallback_error:
+            self._fallback_consecutive_errors += 1
+            if self._fallback_consecutive_errors >= 3 and not self._fallback_error:
                 self._fallback_error = True
                 self._telegram_client.send_system_alert(f"⚠️ Fallback check error: {e}")
             self._llm_busy.clear()
@@ -139,11 +143,13 @@ class Manager(threading.Thread):
                 self._llm_logger.log(result_time, score, summary, description, self._last_llm_inference_latency, list(frames_by_camera.keys()), detected_by)
             if self._llm_error:
                 self._llm_error = False
+                self._llm_consecutive_errors = 0
                 self._telegram_client.send_system_alert("✅ LLM recovered")
             self._telegram_client.send_alert(score, summary, description, frames)
         except Exception as e:
             logger.exception("LLM error")
-            if not self._llm_error:
+            self._llm_consecutive_errors += 1
+            if self._llm_consecutive_errors >= 3 and not self._llm_error:
                 self._llm_error = True
                 self._telegram_client.send_system_alert(f"⚠️ LLM error: {e}")
         finally:

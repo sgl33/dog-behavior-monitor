@@ -20,18 +20,21 @@ class RecorderConfig:
 
 @dataclass
 class LLMEndpointConfig:
-    openai_compatible_url: str
-    model: str
+    vision_model: str
+    vision_url: str
+    fast_model: str
+    fast_url: str
+    memory_model: str
+    memory_url: str
     frame_sampling: list[dict]
     detection_window: float
     crop_padding: float
     max_tokens: int
     cooldown: float
     slow_threshold: float
-    token: str | None = None
-    query_model: str | None = None
-    query_url: str | None = None
-    query_token: str | None = None
+    vision_token: str | None = None
+    fast_token: str | None = None
+    memory_token: str | None = None
 
 
 @dataclass

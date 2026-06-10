@@ -1,0 +1,5 @@
+Given this question about a dog's recent behavior, how many minutes of history are needed to answer it accurately? Up to {max_minutes} minutes are available.
+
+Question: {question}
+
+Reply with just a single integer number of minutes.

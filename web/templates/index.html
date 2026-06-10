@@ -43,6 +43,15 @@ h1 { font-size: 15px; font-weight: 600; }
   -webkit-line-clamp: 3; -webkit-box-orient: vertical;
 }
 .empty { text-align: center; color: #484f58; padding: 48px 16px; font-size: 14px; }
+#cameras {
+  background: #161b22; border-bottom: 1px solid #30363d;
+  padding: 5px 16px; display: none; flex-wrap: wrap; gap: 12px;
+}
+#cameras.visible { display: flex; }
+.cam { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #8b949e; }
+.cam-dot { width: 6px; height: 6px; border-radius: 50%; background: #484f58; flex-shrink: 0; }
+.cam-dot.ok  { background: #3fb950; }
+.cam-dot.err { background: #f85149; }
 .card.has-thumb { cursor: pointer; }
 .card.has-thumb:hover { border-color: #8b949e; }
 #modal {
@@ -59,6 +68,7 @@ h1 { font-size: 15px; font-weight: 600; }
   <h1>Dog Behavior Monitor</h1>
   <span id="dot"></span>
 </header>
+<div id="cameras"></div>
 <div id="feed"><p class="empty">No results yet</p></div>
 <div id="modal"><img id="modal-img" src="" alt=""></div>
 <script>
@@ -123,6 +133,14 @@ function addCard(e) {
   feed.prepend(d);
 }
 
+function updateCameras(status) {
+  const div = document.getElementById('cameras');
+  div.className = 'visible';
+  div.innerHTML = Object.entries(status)
+    .map(([name, ok]) => `<span class="cam"><span class="cam-dot ${ok ? 'ok' : 'err'}"></span>${fmtCamera(name)}</span>`)
+    .join('');
+}
+
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
@@ -130,8 +148,9 @@ function connect() {
   ws.onclose = () => { dot.className = ''; setTimeout(connect, 3000); };
   ws.onmessage = ({ data }) => {
     const msg = JSON.parse(data);
-    if (msg.type === 'history') msg.entries.forEach(addCard);
-    else addCard(msg.entry);
+    if (msg.type === 'history') { msg.entries.forEach(addCard); return; }
+    if (msg.type === 'cameras') { updateCameras(msg.status); return; }
+    addCard(msg.entry);
   };
 }
 connect();

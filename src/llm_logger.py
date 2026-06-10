@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 _SUMMARIZE_PROMPT_PATH = _PROMPTS_DIR / "summarize_prompt.txt"
 _QUERY_PROMPT_PATH = _PROMPTS_DIR / "query_prompt.txt"
+_TRIAGE_PROMPT_PATH = _PROMPTS_DIR / "triage_prompt.txt"
 
 
 def _time_weighted_avg_score(entries: list[dict]) -> float:
@@ -35,25 +37,50 @@ class LLMOutputLogger:
         llm_client: LLMClient,
         dog_name: str = "the dog",
         retention_hours: int = 48,
-        query_model: str | None = None,
+        summary_window_minutes: int = 10,
     ):
         self._dir = data_dir / "llm_outputs"
         self._dir.mkdir(parents=True, exist_ok=True)
         self._llm_client = llm_client
         self._dog_name = dog_name
         self._retention_hours = retention_hours
-        self._query_model = query_model
+        self._summary_window_minutes = summary_window_minutes
         self._lock = threading.Lock()
-        self._buffer: list[dict] = []
-        self._prev_entries: list[dict] = []
+        self._buffer_path = self._dir / "buffer.jsonl"
+        self._window_buffer: dict[datetime, list[dict]] = {}  # minute -> raw entries
         self._history: dict[int, list[dict]] = {}  # chat_id → [{time, user, assistant}]
-        self._current_minute: datetime | None = None  # truncated to the minute
         self._last_cleanup = datetime.now()
         self._cleanup()
+        self._load_buffer()
 
-    def set_query_model(self, model: str | None) -> None:
-        with self._lock:
-            self._query_model = model
+    def _load_buffer(self) -> None:
+        if not self._buffer_path.exists():
+            return
+        try:
+            with open(self._buffer_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    e = json.loads(line)
+                    w = datetime.fromisoformat(e["time"]).replace(second=0, microsecond=0)
+                    self._window_buffer.setdefault(w, []).append(e)
+            total = sum(len(v) for v in self._window_buffer.values())
+            logger.info("Loaded %d buffered entries from disk", total)
+        except Exception:
+            logger.exception("Failed to load buffer file")
+
+    def _rewrite_buffer_file(self) -> None:
+        entries = sorted(
+            (e for es in self._window_buffer.values() for e in es),
+            key=lambda e: e["time"],
+        )
+        try:
+            with open(self._buffer_path, "w") as f:
+                for e in entries:
+                    f.write(json.dumps(e) + "\n")
+        except Exception:
+            logger.exception("Failed to rewrite buffer file")
 
     def log(
         self,
@@ -74,47 +101,45 @@ class LLMOutputLogger:
             "cameras": cameras,
             "detected_by": detected_by,
         }
-        snapshot = None
-        prev_snapshot: list[dict] = []
-        flushed_minute: datetime | None = None
+        to_flush: list[tuple[list[dict], datetime, list[dict]]] = []
         do_cleanup = False
 
         with self._lock:
-            entry_minute = result_time.replace(second=0, microsecond=0)
+            entry_window = result_time.replace(second=0, microsecond=0)
+            self._window_buffer.setdefault(entry_window, []).append(entry)
+            try:
+                with open(self._buffer_path, "a") as f:
+                    f.write(json.dumps(entry) + "\n")
+            except Exception:
+                logger.exception("Failed to append to buffer file")
 
-            if self._current_minute is None:
-                self._current_minute = entry_minute
-
-            if entry_minute != self._current_minute:
-                # Clock minute rolled over — flush the completed previous minute
-                if self._buffer:
-                    snapshot = self._buffer[:]
-                    flushed_minute = self._current_minute
-                    prev_snapshot = self._prev_entries[:]
-                    self._prev_entries = snapshot
-                else:
-                    self._prev_entries = []
-                self._buffer.clear()
-                self._current_minute = entry_minute
-
-            self._buffer.append(entry)
+            # Windows older than summary_window_minutes ago are ready to compact.
+            # Their context is whatever is still in the realtime window (windows after them).
+            ready_cutoff = entry_window - timedelta(minutes=self._summary_window_minutes)
+            for w in sorted(w for w in self._window_buffer if w < ready_cutoff):
+                target = self._window_buffer.pop(w)
+                context = sorted(
+                    (e for cw, ces in self._window_buffer.items() if cw > w for e in ces),
+                    key=lambda e: e["time"],
+                )
+                to_flush.append((target, w, context))
 
             now = datetime.now()
             if (now - self._last_cleanup) >= timedelta(hours=1):
                 self._last_cleanup = now
                 do_cleanup = True
 
-        if snapshot and flushed_minute:
+        for target, w, context in to_flush:
             threading.Thread(
                 target=self._summarize_and_write,
-                args=(snapshot, flushed_minute, prev_snapshot),
+                args=(target, w, context),
                 daemon=True,
                 name="llm-logger-summarize",
             ).start()
         if do_cleanup:
             self._cleanup()
 
-    def _summarize_and_write(self, entries: list[dict], minute: datetime, prev_entries: list[dict] | None = None) -> None:
+    def _summarize_and_write(self, entries: list[dict], minute: datetime, context_entries: list[dict] | None = None) -> None:
         period_start = entries[0]["time"]
         period_end = entries[-1]["time"]
 
@@ -125,7 +150,8 @@ class LLMOutputLogger:
         except Exception:
             duration = "unknown"
 
-        all_entries = (prev_entries or []) + entries
+        # entries = the minute being summarized; context_entries = the realtime window that follows
+        all_entries = entries + (context_entries or [])
         obs_text = "\n".join(
             f"- [{e['time']}] score={e['score']}: {e.get('summary') or ''} — {e['description']}"
             for e in all_entries
@@ -138,7 +164,7 @@ class LLMOutputLogger:
             observations=obs_text,
         )
         try:
-            raw = (self._llm_client.summarize(prompt) or "").strip()
+            raw = (self._llm_client.summarize(prompt, model=self._llm_client.fast_model) or "").strip()
             summary_text = raw if raw and raw.lower() != "null" else entries[-1]["description"]
         except Exception:
             logger.exception("LLM summarization failed, falling back to last description")
@@ -165,26 +191,59 @@ class LLMOutputLogger:
                     f.write(json.dumps(record) + "\n")
             except Exception:
                 logger.exception("Failed to write LLM output summary")
+            self._rewrite_buffer_file()
+
+    _TRIAGE_FALLBACK_MINUTES = 60
+
+    def _triage_minutes(self, question: str) -> int:
+        max_minutes = self._retention_hours * 60
+        try:
+            prompt = _TRIAGE_PROMPT_PATH.read_text().format(
+                max_minutes=max_minutes, question=question
+            )
+            raw = self._llm_client.summarize(prompt, model=self._llm_client.fast_model, max_tokens=1024)
+            match = re.search(r"\d+", raw or "")
+            if not match:
+                logger.info("Query triage: no number in response, using %d min fallback", self._TRIAGE_FALLBACK_MINUTES)
+                return self._TRIAGE_FALLBACK_MINUTES
+            minutes = min(int(match.group()), max_minutes)
+            logger.info("Query triage: %d min", minutes)
+            return minutes
+        except Exception:
+            logger.exception("Triage failed, using %d min fallback", self._TRIAGE_FALLBACK_MINUTES)
+            return self._TRIAGE_FALLBACK_MINUTES
 
     def query(self, question: str, chat_id: int | None = None) -> str:
-        cutoff = (datetime.now() - timedelta(hours=self._retention_hours)).date()
+        minutes = self._triage_minutes(question)
+        cutoff_dt = datetime.now() - timedelta(minutes=minutes)
+        cutoff_date = cutoff_dt.date()
+        cutoff_hhmm = cutoff_dt.strftime("%H:%M")
         records: list[dict] = []
         for f in sorted(self._dir.glob("*.jsonl")):
             try:
-                if datetime.strptime(f.stem, "%Y-%m-%d").date() < cutoff:
+                file_date = datetime.strptime(f.stem, "%Y-%m-%d").date()
+                if file_date < cutoff_date:
                     continue
                 with open(f) as fh:
                     for line in fh:
                         line = line.strip()
-                        if line:
-                            records.append(json.loads(line))
+                        if not line:
+                            continue
+                        r = json.loads(line)
+                        if file_date == cutoff_date and r.get("time", "") < cutoff_hhmm:
+                            continue
+                        records.append(r)
             except Exception:
                 logger.exception("Failed to read log file %s", f)
 
         with self._lock:
-            buffer_snapshot = self._buffer[:]
+            buffer_snapshot = sorted(
+                (e for entries in self._window_buffer.values() for e in entries),
+                key=lambda e: e["time"],
+            )
 
         records.sort(key=lambda r: (r.get("date", ""), r.get("time", "")))
+        logger.info("Query context: %d records + %d buffer entries", len(records), len(buffer_snapshot))
 
         records_text = "\n".join(
             f"[{r['date']} {r['time']}] score={r.get('score')}/{r.get('peak_score')} "
@@ -225,7 +284,7 @@ class LLMOutputLogger:
             messages = [{"role": "user", "content": preamble + "\n\n" + question}]
 
         answer = self._llm_client.summarize(
-            messages=messages, max_tokens=500, model=self._query_model, query=True
+            messages=messages, max_tokens=500, model=self._llm_client.memory_model, endpoint="memory"
         )
 
         if chat_id is not None:

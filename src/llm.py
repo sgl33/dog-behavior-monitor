@@ -8,7 +8,11 @@ import cv2
 import numpy as np
 import requests
 
+import logging
+
 from config import LLMEndpointConfig
+
+logger = logging.getLogger(__name__)
 
 _JPEG_QUALITY = 85
 _LLM_MAX_WIDTH = 640
@@ -20,27 +24,46 @@ _DETECT_PROMPT_PATH = _PROMPTS_DIR / "detect_prompt.txt"
 
 class LLMClient:
     def __init__(self, config: LLMEndpointConfig, dog_description: str):
-        self._url = f"{config.openai_compatible_url.rstrip('/')}/chat/completions"
-        self._model = config.model
+        self._vision_model = config.vision_model
+        self._fast_model = config.fast_model
+        self._memory_model = config.memory_model
         self._dog_description = dog_description
         self._frame_sampling = [(t["seconds"], t["fps"]) for t in config.frame_sampling]
         self._crop_padding = config.crop_padding
         self._max_tokens = config.max_tokens
-        self._token = config.token
-        self._headers = {"Authorization": f"Bearer {config.token}"} if config.token else {}
-        self._set_query_endpoint(config.query_url, config.query_token)
+        self._vision_url, self._vision_headers = self._endpoint(config.vision_url, config.vision_token)
+        self._fast_url, self._fast_headers = self._endpoint(config.fast_url, config.fast_token)
+        self._memory_url, self._memory_headers = self._endpoint(config.memory_url, config.memory_token)
 
-    def set_model(self, model: str) -> None:
-        self._model = model
+    @staticmethod
+    def _endpoint(url: str, token: str | None) -> tuple[str, dict]:
+        return f"{url.rstrip('/')}/chat/completions", ({"Authorization": f"Bearer {token}"} if token else {})
 
-    def set_query_endpoint(self, url: str | None, token: str | None) -> None:
-        self._set_query_endpoint(url, token)
+    @property
+    def fast_model(self) -> str:
+        return self._fast_model
 
-    def _set_query_endpoint(self, url: str | None, token: str | None) -> None:
-        base = url.rstrip("/") if url else self._url.rsplit("/chat/completions", 1)[0]
-        self._query_url = f"{base}/chat/completions"
-        q_token = token if token is not None else self._token
-        self._query_headers = {"Authorization": f"Bearer {q_token}"} if q_token else {}
+    @property
+    def memory_model(self) -> str:
+        return self._memory_model
+
+    def set_vision_model(self, model: str) -> None:
+        self._vision_model = model
+
+    def set_fast_model(self, model: str) -> None:
+        self._fast_model = model
+
+    def set_memory_model(self, model: str) -> None:
+        self._memory_model = model
+
+    def set_vision_endpoint(self, url: str, token: str | None) -> None:
+        self._vision_url, self._vision_headers = self._endpoint(url, token)
+
+    def set_fast_endpoint(self, url: str, token: str | None) -> None:
+        self._fast_url, self._fast_headers = self._endpoint(url, token)
+
+    def set_memory_endpoint(self, url: str, token: str | None) -> None:
+        self._memory_url, self._memory_headers = self._endpoint(url, token)
 
     def analyze(
         self,
@@ -63,33 +86,48 @@ class LLMClient:
                 })
 
         response = requests.post(
-            self._url,
-            headers=self._headers,
+            self._vision_url,
+            headers=self._vision_headers,
             json={
-                "model": self._model,
+                "model": self._vision_model,
                 "messages": [{"role": "user", "content": content}],
                 "max_tokens": self._max_tokens,
             },
             timeout=60,
         )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"], sampled_frames
+        content = response.json()["choices"][0]["message"]["content"]
+        logger.info("LLM analyze: %s", content)
+        return content, sampled_frames
 
-    def summarize(self, prompt: str = "", max_tokens: int = 200, model: str | None = None, query: bool = False, messages: list[dict] | None = None) -> str:
-        url = self._query_url if query else self._url
-        headers = self._query_headers if query else self._headers
+    def summarize(
+        self,
+        prompt: str = "",
+        max_tokens: int = 200,
+        model: str | None = None,
+        endpoint: str = "fast",
+        messages: list[dict] | None = None,
+    ) -> str:
+        _endpoints = {
+            "vision": (self._vision_url, self._vision_headers),
+            "fast":   (self._fast_url,   self._fast_headers),
+            "memory": (self._memory_url, self._memory_headers),
+        }
+        url, headers = _endpoints.get(endpoint, _endpoints["fast"])
         response = requests.post(
             url,
             headers=headers,
             json={
-                "model": model or self._model,
+                "model": model or self._vision_model,
                 "messages": messages if messages is not None else [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
             },
             timeout=30,
         )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"] or ""
+        content = response.json()["choices"][0]["message"]["content"] or ""
+        logger.info("LLM %s: %s", endpoint, content)
+        return content
 
     def detect_dog(self, frames_by_camera: dict[str, np.ndarray]) -> list[str]:
         prompt = _DETECT_PROMPT_PATH.read_text().format(dog_description=self._dog_description)
@@ -101,16 +139,17 @@ class LLMClient:
                 "image_url": {"url": f"data:image/jpeg;base64,{_encode(frame)}"},
             })
         payload = {
-            "model": self._model,
+            "model": self._vision_model,
             "messages": [{"role": "user", "content": content}],
             "max_tokens": self._max_tokens,
         }
 
         def _call() -> set[str]:
             for _ in range(3):
-                r = requests.post(self._url, headers=self._headers, json=payload, timeout=30)
+                r = requests.post(self._vision_url, headers=self._vision_headers, json=payload, timeout=30)
                 r.raise_for_status()
                 content = r.json()["choices"][0]["message"]["content"] or ""
+                logger.info("LLM detect: %s", content)
                 try:
                     return set(json.loads(extract_json(content)).get("cameras_with_dog", []))
                 except (json.JSONDecodeError, ValueError):

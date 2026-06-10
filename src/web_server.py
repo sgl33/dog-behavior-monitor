@@ -62,3 +62,13 @@ class WebServerClient:
             ).raise_for_status()
         except Exception:
             logger.warning("Failed to push result to web server")
+
+    def push_camera_status(self, statuses: dict[str, bool]) -> None:
+        try:
+            requests.post(
+                self._push_url.replace("/push", "/push_cameras"),
+                json={"status": statuses},
+                timeout=5,
+            ).raise_for_status()
+        except Exception:
+            logger.warning("Failed to push camera status to web server")

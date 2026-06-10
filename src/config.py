@@ -62,7 +62,7 @@ class Config:
     telegram: TelegramConfig
     web_server: WebServerConfig
     detect_interval: float
-    manager_loop_interval: float
+    post_llm_cooldown: float
     camera_stale_threshold: int
     yolo_source_model: Path
     yolo_device: str
@@ -87,7 +87,7 @@ def load_config(path: Path) -> Config:
         telegram=TelegramConfig(**raw["telegram"]),
         web_server=WebServerConfig(**raw["web_server"]),
         detect_interval=raw["detect_interval"],
-        manager_loop_interval=raw["manager_loop_interval"],
+        post_llm_cooldown=raw["post_llm_cooldown"],
         camera_stale_threshold=raw["camera_stale_threshold"],
         yolo_source_model=path.parent / raw["yolo_source_model"],
         yolo_device=raw["yolo_device"],

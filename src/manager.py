@@ -37,14 +37,15 @@ class Manager(threading.Thread):
         self._telegram_client = telegram_client
         self._web_server = web_server
         self._detection_window = config.llm_endpoint.detection_window
-        self._llm_cooldown = config.llm_endpoint.cooldown
-        self._loop_interval = config.manager_loop_interval
+        self._post_llm_cooldown = config.post_llm_cooldown
         self._slow_threshold = config.llm_endpoint.slow_threshold
         self._no_detection_interval = config.no_detection_fallback_seconds
         self._fallback_detection_enabled = config.fallback_detection_enabled
+        self._llm_enabled = True
         self._llm_logger = llm_logger
         self._llm_busy = threading.Event()
         self._last_llm_time = 0.0
+        self._last_llm_finish_time = 0.0
         self._last_llm_inference_latency: float | None = None
         self._llm_slow = False
         self._llm_error = False
@@ -58,17 +59,18 @@ class Manager(threading.Thread):
     def run(self) -> None:
         while not self._stop_event.is_set():
             now = time.monotonic()
+            if not self._llm_enabled:
+                self._stop_event.wait(0.5)
+                continue
             if self._state.any_recent(within_seconds=self._detection_window):
-                if not self._llm_busy.is_set() and (now - self._last_llm_time) >= self._llm_cooldown:
+                if not self._llm_busy.is_set() and (now - self._last_llm_finish_time) >= self._post_llm_cooldown:
                     logger.info("Dog detected, firing LLM")
                     self._fire_llm(fallback=False)
             elif self._fallback_detection_enabled and not self._llm_busy.is_set() and (now - self._last_llm_time) >= self._no_detection_interval:
                 logger.info("No dog detected, firing fallback LLM")
                 self._fire_llm(fallback=True)
-            else:
-                logger.debug("Dog not detected")
 
-            self._stop_event.wait(self._loop_interval)
+            self._stop_event.wait(0.05)
 
     def _fire_llm(self, fallback: bool = False) -> None:
         self._llm_busy.set()
@@ -152,8 +154,26 @@ class Manager(threading.Thread):
             self._llm_consecutive_errors += 1
             if self._llm_consecutive_errors >= 3 and not self._llm_error:
                 self._llm_error = True
-                self._telegram_client.send_system_alert(f"⚠️ LLM error: {e}")
+                detail = ""
+                status = ""
+                resp = getattr(e, "response", None)
+                if resp is not None:
+                    status = str(resp.status_code)
+                    try:
+                        detail = resp.json().get("error", {}).get("message", "") or ""
+                    except Exception:
+                        pass
+                if detail and status:
+                    msg = f"{detail} (HTTP code {status})"
+                elif detail:
+                    msg = detail
+                elif status:
+                    msg = f"{status} {getattr(resp, 'reason', '')}".strip()
+                else:
+                    msg = str(e)
+                self._telegram_client.send_system_alert(f"⚠️ LLM error: {msg}")
         finally:
+            self._last_llm_finish_time = time.monotonic()
             self._llm_busy.clear()
 
     @property
@@ -187,6 +207,13 @@ class Manager(threading.Thread):
         fire_time = time.monotonic()
         threading.Thread(target=self._run_llm, args=(frames_by_camera, boxes_by_camera, fire_time, "YOLO"), daemon=True).start()
         return "✅ LLM analysis triggered"
+
+    def set_llm_enabled(self, enabled: bool) -> None:
+        self._llm_enabled = enabled
+
+    @property
+    def llm_enabled(self) -> bool:
+        return self._llm_enabled
 
     def set_fallback_detection_enabled(self, enabled: bool) -> None:
         self._fallback_detection_enabled = enabled

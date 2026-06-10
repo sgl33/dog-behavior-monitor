@@ -48,19 +48,26 @@ llm_endpoint:
   vision_model: qwen/qwen3-vl-4b
   vision_url: http://host.docker.internal:1234/v1
   vision_token: fake-token
-  # Multimodal model for frame analysis and dog detection. Minimum 64K context.
+  # Multimodal model for frame analysis and dog detection. Minimum 32K context.
+  # WARNING: Local model strongly recommended; this software burns an estimated
+  # 400 million input tokens per DAY on a RTX 5090 with continuous usage. 
+  # Cloud API will be expensive!!
   # (Use host.docker.internal instead of localhost inside Docker)
 
-  fast_model: your-fast-model
+  fast_model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
   fast_url: https://openrouter.ai/api/v1
   fast_token: your-token
-  # Fast text model for minute summaries and query triage. Minimum 32K context.
+  # Fast text model for minute summaries and query triage.
+  # Recommended: OpenRouter free model.
+  # Note: this endpoint will be called at least 288 times a day. If you are
+  # using a free OpenRouter model, add $10 to your account to increase your 
+  # daily limit from 50 to 1,000 per day.
 
-  memory_model: your-memory-model
+  memory_model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
   memory_url: https://openrouter.ai/api/v1
   memory_token: your-token
-  # Conversational query model. Minimum 128K context, 192K recommended.
-  # Authentication token. If not required, put random gibberish
+  # Conversational query model that analyzes a massive memory.
+  # Minimum 128K context, 256K recommended.
 
   detection_window: 3.0
   # Lookback window in seconds. A YOLO detection stays "active" within this window,
@@ -102,8 +109,8 @@ dog_description: a yellow golden retriever
 
 # --- System ---
 
-manager_loop_interval: 1.0
-# Seconds between manager loop ticks.
+post_llm_cooldown: 1.0
+# Minimum seconds between LLM finishing and the next LLM trigger.
 
 camera_stale_threshold: 15
 # Seconds since last frame before a camera is shown as stale in /status.

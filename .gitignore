@@ -4,5 +4,7 @@ src/__pycache__/
 env
 datasets
 config.yaml
-data/*.json
-data/*.jsonl
+data/llm_outputs/
+*.json
+*.jsonl
+TODO.txt

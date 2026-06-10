@@ -1,22 +1,18 @@
-import base64
 import json
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import cv2
 import numpy as np
 import requests
 
 import logging
 
 from config import LLMEndpointConfig
+from utils import encode_frame
 
 logger = logging.getLogger(__name__)
 
-_JPEG_QUALITY = 85
-_LLM_MAX_WIDTH = 640
-_LLM_MAX_HEIGHT = 360
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 _ANALYZE_PROMPT_PATH = _PROMPTS_DIR / "analyze_prompt.txt"
 _DETECT_PROMPT_PATH = _PROMPTS_DIR / "detect_prompt.txt"
@@ -67,7 +63,7 @@ class LLMClient:
 
     def analyze(
         self,
-        frames_by_camera: dict[str, list[tuple[datetime, np.ndarray]]],
+        frames_by_camera: dict[str, list[tuple[datetime, np.ndarray, str]]],
         boxes_by_camera: dict[str, list[tuple[int, int, int, int]]],
     ) -> tuple[str, list[np.ndarray]]:
         prompt = _ANALYZE_PROMPT_PATH.read_text().format(dog_description=self._dog_description)
@@ -76,13 +72,18 @@ class LLMClient:
 
         for camera, frames in frames_by_camera.items():
             boxes = boxes_by_camera.get(camera, [])
-            for ts, frame in _sample_tiered(frames, self._frame_sampling):
-                cropped = _crop(frame, boxes, self._crop_padding) if boxes else frame
-                sampled_frames.append(cropped)
+            for ts, frame, encoded in _sample_tiered(frames, self._frame_sampling):
+                if boxes:
+                    display = _crop(frame, boxes, self._crop_padding)
+                    img_b64 = encode_frame(display)
+                else:
+                    display = frame
+                    img_b64 = encoded
+                sampled_frames.append(display)
                 content.append({"type": "text", "text": f"{camera} @ {ts.strftime('%H:%M:%S.%f')[:-3]}"})
                 content.append({
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{_encode(cropped)}"},
+                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
                 })
 
         response = requests.post(
@@ -92,6 +93,23 @@ class LLMClient:
                 "model": self._vision_model,
                 "messages": [{"role": "user", "content": content}],
                 "max_tokens": self._max_tokens,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "dog_analysis",
+                        "strict": True,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "description": {"type": "string"},
+                                "summary": {"type": "string"},
+                                "score": {"type": "integer"},
+                            },
+                            "required": ["description", "summary", "score"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
             },
             timeout=60,
         )
@@ -103,7 +121,7 @@ class LLMClient:
     def summarize(
         self,
         prompt: str = "",
-        max_tokens: int = 200,
+        max_tokens: int = 1024,
         model: str | None = None,
         endpoint: str = "fast",
         messages: list[dict] | None = None,
@@ -136,7 +154,7 @@ class LLMClient:
             content.append({"type": "text", "text": camera})
             content.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{_encode(frame)}"},
+                "image_url": {"url": f"data:image/jpeg;base64,{encode_frame(frame)}"},
             })
         payload = {
             "model": self._vision_model,
@@ -200,28 +218,19 @@ def _sample(
 
 
 def _sample_tiered(
-    frames: list[tuple[datetime, np.ndarray]],
+    frames: list[tuple[datetime, np.ndarray, str]],
     tiers: list[tuple[float, float]],
-) -> list[tuple[datetime, np.ndarray]]:
+) -> list[tuple[datetime, np.ndarray, str]]:
     if not frames:
         return []
     latest_ts = frames[-1][0]
-    result: list[tuple[datetime, np.ndarray]] = []
+    result: list[tuple[datetime, np.ndarray, str]] = []
     boundary = latest_ts
     for seconds, fps in tiers:
         start = boundary - timedelta(seconds=seconds)
-        bucket = [(ts, f) for ts, f in frames if start <= ts < boundary]
+        bucket = [item for item in frames if start <= item[0] < boundary]
         n = round(seconds * fps)
         if n > 0 and bucket:
             result = _sample(bucket, n) + result
         boundary = start
     return result
-
-
-def _encode(frame: np.ndarray) -> str:
-    h, w = frame.shape[:2]
-    if w > _LLM_MAX_WIDTH or h > _LLM_MAX_HEIGHT:
-        scale = min(_LLM_MAX_WIDTH / w, _LLM_MAX_HEIGHT / h)
-        frame = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, _JPEG_QUALITY])
-    return base64.b64encode(buf).decode()

@@ -108,7 +108,7 @@ def main():
     )
     detectors = {
         camera: Detector(
-            camera=camera,
+            camera_name=camera,
             recorder=recorders[camera],
             state=state,
             model=model,

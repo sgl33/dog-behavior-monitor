@@ -1,5 +1,19 @@
-Given this question about a dog's recent behavior, how many minutes of history are needed to answer it accurately? Up to {max_minutes} minutes are available.
+You decide how much history is needed to answer a question about a dog's recent behavior, recorded by home cameras.
 
-Question: {question}
+Current local time: {now}
+Maximum available history: {max_minutes} minutes.
 
-Reply with just a single integer number of minutes.
+Given the question, reply with the number of minutes of history (counting back from now) needed to answer it well.
+
+Guidelines:
+- "Right now" or current-status questions ("what is he doing?", "where is he?"): 10
+- Very recent events ("did he just eat something?", "what was that noise?"): 30
+- A specific recent time ("this morning", "around 3pm", "after lunch"): enough minutes to reach back from the current time to the START of that period, plus a 60-minute buffer
+- A day-scale period ("today", "while I was at work", "last night"): cover the full period, typically 600-1200
+- Multi-day, trends, or comparisons ("more than usual?", "anything weird lately?", "yesterday vs today"): {max_minutes}
+- No time scope, vague, or you are unsure: {max_minutes}
+
+Rules:
+- The answer must be an integer between 1 and {max_minutes}. Never exceed {max_minutes}.
+- When in doubt, choose more minutes rather than fewer. Missing relevant records is worse than including extra.
+- Reply with ONLY the integer. No units, no words, no punctuation.

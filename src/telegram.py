@@ -134,14 +134,18 @@ class TelegramClient:
             return
         self._last_alert_time = now
         self._last_alert_score = score
-        text = f"{score} - {summary}\n\n{description}\n\nLive stream: {self._live_stream_url}\nLogs: {self._logs_url}"
+        text = f"{score} - {summary}\n\n{description}"
+        reply_markup = json.dumps({"inline_keyboard": [[
+            {"text": "Live Stream", "url": self._live_stream_url},
+            {"text": "Logs", "url": self._logs_url},
+        ]]})
         video_bytes = _compile_video(frames, self._video_fps)
         for chat_id in chat_ids:
             if score < thresholds[chat_id]:
                 continue
             requests.post(
                 f"{self._url}/sendVideo",
-                data={"chat_id": chat_id, "caption": text},
+                data={"chat_id": chat_id, "caption": text, "reply_markup": reply_markup},
                 files={"video": ("alert.mp4", video_bytes, "video/mp4")},
                 timeout=60,
             ).raise_for_status()

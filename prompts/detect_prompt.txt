@@ -1,5 +1,28 @@
-Look at each labeled camera feed. For each one, is {dog_description} visible?
+You are checking multiple labeled security camera feeds for the presence of a specific dog.
 
-Look at the scaling to make sure it's {dog_description} and not a stuffed animal. Consider the size of the dog, and only list cameras that you're really sure that it's a real dog of the described size.
+TARGET
+{dog_description}
 
-Reply with JSON only: {{"cameras_with_dog": ["camera_name", ...]}}
+TASK
+For each camera feed, decide whether the target dog is actually visible in that frame.
+
+A camera counts ONLY if you can see a real, live dog matching the description. Do NOT count:
+- Stuffed animals, plush toys, or dog-shaped objects
+- Dog beds, blankets, pillows, or piles of fabric that merely resemble a dog
+- Photos, artwork, or a dog shown on a TV/monitor screen
+- Reflections in mirrors, windows, or glass
+- Other animals or dogs that do not match the description
+
+Checks to apply:
+- Size: compare the animal to nearby furniture and objects. The target is a full-sized dog — anything significantly too small or too large at that distance is not a match.
+- Liveness: real dogs have natural posture and positioning. Be skeptical of anything perfectly still in an odd location (e.g., on a shelf) or with unnaturally uniform texture.
+- Partial visibility counts: if only part of the dog is visible (e.g., tail or back half at the frame edge) but you are confident it is the target dog, include that camera.
+
+PRECISION RULE
+Only include cameras where you are confident. If you are unsure whether something is the dog, leave that camera out. An empty list is a correct and expected answer when the dog is not clearly visible anywhere.
+
+OUTPUT
+Reply with JSON only, no other text:
+{{"cameras_with_dog": ["<camera label exactly as shown>", ...]}}
+- Copy camera labels exactly as they appear on the feeds, character for character.
+- If no camera clearly shows the dog, return {{"cameras_with_dog": []}}

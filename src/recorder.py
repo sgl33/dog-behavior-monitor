@@ -12,6 +12,7 @@ import numpy as np
 
 from config import RecorderConfig
 from telegram import TelegramClient
+from utils import encode_frame
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class Recorder(threading.Thread):
         self._fps = config.fps
         self._offline_alert_seconds = config.offline_alert_seconds
         self._stale_stream_seconds = config.stale_stream_seconds
-        self._buffer: deque[tuple[datetime, np.ndarray]] = deque(maxlen=config.fps * config.buffer_seconds)
+        self._buffer: deque[tuple[datetime, np.ndarray, str]] = deque(maxlen=config.fps * config.buffer_seconds)
         self._lock = threading.Lock()
         self._latest_boxes: list[tuple[int, int, int, int]] = []
         self._stop_event = threading.Event()
@@ -83,7 +84,8 @@ class Recorder(threading.Thread):
                 received_frame = True
                 last_frame_mono = now
                 with self._lock:
-                    self._buffer.append((datetime.now(), frame.copy()))
+                    f = frame.copy()
+                    self._buffer.append((datetime.now(), f, encode_frame(f)))
                 next_capture = now + (1.0 / self._fps)
 
             cap.release()
@@ -111,12 +113,12 @@ class Recorder(threading.Thread):
         with self._lock:
             return self._buffer[-1][1] if self._buffer else None
 
-    def get_frames(self, last_seconds: float) -> list[tuple[datetime, np.ndarray]]:
+    def get_frames(self, last_seconds: float) -> list[tuple[datetime, np.ndarray, str]]:
         cutoff = datetime.now()
         with self._lock:
             return [
-                (ts, frame) for ts, frame in self._buffer
-                if (cutoff - ts).total_seconds() <= last_seconds
+                item for item in self._buffer
+                if (cutoff - item[0]).total_seconds() <= last_seconds
             ]
 
     def stop(self) -> None:

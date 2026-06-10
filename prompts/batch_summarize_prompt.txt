@@ -1,0 +1,13 @@
+Summarize each of the following {batch_size} windows of dog behavior observations.
+
+{windows}
+
+Write exactly {batch_size} summaries, one per time block, in the same order. Separate them with --- on its own line. Do not include the time or any heading in your summaries.
+
+For each window:
+- Summarize everything that happened. If the dog was resting and then zooming around, note both. Similar activities (e.g. resting vs sleeping) may be combined. If conflicting activities happen within a short timespan, consider the surrounding temporal context. (For example: sleeping living room → sleeping upstairs → sleeping living room within 10 seconds — the upstairs detection is likely a false positive.)
+- If you see anything about the dog or human leaving the house or returning, mention that.
+- Do not mention the observation period.
+- Be as concise as possible. Summaries don't need to be in full sentences as long as they make sense.
+
+Reply with the summaries separated by ---, no preamble or explanation.

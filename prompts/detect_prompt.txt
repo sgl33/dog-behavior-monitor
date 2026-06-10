@@ -1,3 +1,5 @@
 Look at each labeled camera feed. For each one, is {dog_description} visible?
-Look at the scaling to make sure it's {dog_description} and not a stuffed animal.
+
+Look at the scaling to make sure it's {dog_description} and not a stuffed animal. Consider the size of the dog, and only list cameras that you're really sure that it's a real dog of the described size.
+
 Reply with JSON only: {{"cameras_with_dog": ["camera_name", ...]}}

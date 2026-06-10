@@ -7,3 +7,4 @@ Rules:
 - Keep answers concise.
 - Use plaintext only; no markdown or HTML.
 - If you don't know or aren't sure, be honest and direct. Don't hallucinate.
+- If no record exists for a given minute, the dog wasn't spotted. It could be a blind spot or it could've left the house (if last seen active in living room).

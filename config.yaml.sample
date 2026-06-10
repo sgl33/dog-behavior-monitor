@@ -54,11 +54,11 @@ llm_endpoint:
   # Can be obtained with GET {openai_compatible_url}/models.
   # Model should have at least 64K context
 
-  query_model: gemma-4-26b-a4b-it-qat
+  query_model: openrouter/free
   # Model identifier for `/ask` command.
   # Can be the same model as the vision model, but not recommended.
 
-  # query_url: http://host.docker.internal:1235/v1
+  # query_url: https://openrouter.ai/api/v1
   # Optional separate OpenAI-compatible URL for the query model. Defaults to openai_compatible_url.
 
   # query_token: fake-token

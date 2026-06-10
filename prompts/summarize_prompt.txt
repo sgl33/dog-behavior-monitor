@@ -2,7 +2,7 @@ Summarize the following {count} dog behavior observations from {start} to {end} 
 
 {observations}
 
-Summarize everything that happened. For example, if the dog was resting and then zooming around, note both. However, similar activities (e.g. resting vs sleeping) may be combined.
+Summarize everything that happened. For example, if the dog was resting and then zooming around, note both. However, similar activities (e.g. resting vs sleeping) may be combined. Also, if there are conflicting activities happening within a short timespan, consider the surrounding temporal context to correctly analyze the situation. (For example, sleeping living room -> sleeping upstairs -> sleeping living room within 10 seconds - the upstairs detection should be considered a false positive)
 
 If you see anything about the dog or human leaving the house or returning, mention that.
 

@@ -92,26 +92,36 @@ class LLMClient:
         return response.json()["choices"][0]["message"]["content"] or ""
 
     def detect_dog(self, frames_by_camera: dict[str, np.ndarray]) -> list[str]:
-        content: list[dict] = [{"type": "text", "text": _DETECT_PROMPT_PATH.read_text().format(dog_description=self._dog_description)}]
+        prompt = _DETECT_PROMPT_PATH.read_text().format(dog_description=self._dog_description)
+        content: list[dict] = [{"type": "text", "text": prompt}]
         for camera, frame in frames_by_camera.items():
             content.append({"type": "text", "text": camera})
             content.append({
                 "type": "image_url",
                 "image_url": {"url": f"data:image/jpeg;base64,{_encode(frame)}"},
             })
-        response = requests.post(
-            self._url,
-            headers=self._headers,
-            json={
-                "model": self._model,
-                "messages": [{"role": "user", "content": content}],
-                "max_tokens": self._max_tokens,
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        text = response.json()["choices"][0]["message"]["content"]
-        return json.loads(extract_json(text)).get("cameras_with_dog", [])
+        payload = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": content}],
+            "max_tokens": self._max_tokens,
+        }
+
+        def _call() -> set[str]:
+            for _ in range(3):
+                r = requests.post(self._url, headers=self._headers, json=payload, timeout=30)
+                r.raise_for_status()
+                content = r.json()["choices"][0]["message"]["content"] or ""
+                try:
+                    return set(json.loads(extract_json(content)).get("cameras_with_dog", []))
+                except (json.JSONDecodeError, ValueError):
+                    continue
+            return set()
+
+        first = _call()
+        if not first:
+            return []
+        second = _call()
+        return sorted(first & second)
 
 
 def extract_json(text: str) -> str:

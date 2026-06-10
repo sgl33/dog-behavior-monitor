@@ -103,7 +103,7 @@ function addCard(e) {
     ? `<p class="summary">${esc(e.summary)}</p>`
     : '';
   const detect = (e.cameras && e.cameras.length && e.detected_by)
-    ? `<p class="detect">${e.cameras.map(fmtCamera).join(', ')} ${esc(e.detected_by) === "YOLO" ? "" : "(LLM)"}</p>`
+    ? `<p class="detect">${e.cameras.map(fmtCamera).join(', ')} ${esc(e.detected_by) === "YOLO" ? "" : "(LLM detected)"}</p>`
     : '';
   d.innerHTML = `
     ${img}

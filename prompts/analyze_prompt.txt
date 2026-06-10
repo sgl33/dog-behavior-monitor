@@ -20,4 +20,4 @@ You must follow these rules:
 - Mention where he is.
 - If you don't see him, don't make up things; be honest and direct.
 
-Respond in JSON with keys `score` (0-10), `summary` (up to 5 words), and `description` (1-2 short sentences).
+Respond in JSON with keys `score` (0-10), `summary` (up to 5 words - no full sentences, the word "dog", or the dog's name), and `description` (1-2 short sentences).

@@ -45,6 +45,7 @@ class LLMOutputLogger:
         self._query_model = query_model
         self._lock = threading.Lock()
         self._buffer: list[dict] = []
+        self._prev_entries: list[dict] = []
         self._history: dict[int, list[dict]] = {}  # chat_id → [{time, user, assistant}]
         self._current_minute: datetime | None = None  # truncated to the minute
         self._last_cleanup = datetime.now()
@@ -74,6 +75,7 @@ class LLMOutputLogger:
             "detected_by": detected_by,
         }
         snapshot = None
+        prev_snapshot: list[dict] = []
         flushed_minute: datetime | None = None
         do_cleanup = False
 
@@ -88,6 +90,10 @@ class LLMOutputLogger:
                 if self._buffer:
                     snapshot = self._buffer[:]
                     flushed_minute = self._current_minute
+                    prev_snapshot = self._prev_entries[:]
+                    self._prev_entries = snapshot
+                else:
+                    self._prev_entries = []
                 self._buffer.clear()
                 self._current_minute = entry_minute
 
@@ -101,14 +107,14 @@ class LLMOutputLogger:
         if snapshot and flushed_minute:
             threading.Thread(
                 target=self._summarize_and_write,
-                args=(snapshot, flushed_minute),
+                args=(snapshot, flushed_minute, prev_snapshot),
                 daemon=True,
                 name="llm-logger-summarize",
             ).start()
         if do_cleanup:
             self._cleanup()
 
-    def _summarize_and_write(self, entries: list[dict], minute: datetime) -> None:
+    def _summarize_and_write(self, entries: list[dict], minute: datetime, prev_entries: list[dict] | None = None) -> None:
         period_start = entries[0]["time"]
         period_end = entries[-1]["time"]
 
@@ -119,13 +125,14 @@ class LLMOutputLogger:
         except Exception:
             duration = "unknown"
 
+        all_entries = (prev_entries or []) + entries
         obs_text = "\n".join(
             f"- [{e['time']}] score={e['score']}: {e.get('summary') or ''} — {e['description']}"
-            for e in entries
+            for e in all_entries
         )
         prompt = _SUMMARIZE_PROMPT_PATH.read_text().format(
-            count=len(entries),
-            start=period_start,
+            count=len(all_entries),
+            start=all_entries[0]["time"],
             end=period_end,
             duration=duration,
             observations=obs_text,

@@ -1,0 +1,3 @@
+Look at each labeled camera feed. For each one, is {dog_description} visible?
+Look at the scaling to make sure it's {dog_description} and not a stuffed animal.
+Reply with JSON only: {{"cameras_with_dog": ["camera_name", ...]}}

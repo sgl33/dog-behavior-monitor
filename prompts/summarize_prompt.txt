@@ -1,0 +1,12 @@
+Summarize the following {count} dog behavior observations from {start} to {end} ({duration}).
+
+{observations}
+
+Summarize everything that happened. For example, if the dog was resting and then zooming around, note both. However, similar activities (e.g. resting vs sleeping) may be combined.
+
+If you see anything about the dog or human leaving the house or returning, mention that.
+
+Rules:
+- Do not mention the observation period.
+- Be as concise as possible. Summary doesn't need to be in full sentences or grammatically correct as long as it makes sense.
+- Reply with the summary only, no preamble or explanation.

@@ -29,6 +29,9 @@ class LLMEndpointConfig:
     cooldown: float
     slow_threshold: float
     token: str | None = None
+    query_model: str | None = None
+    query_url: str | None = None
+    query_token: str | None = None
 
 
 @dataclass
@@ -61,6 +64,7 @@ class Config:
     yolo_source_model: Path
     yolo_device: str
     yolo_image_size: int
+    dog_name: str
     dog_description: str
     no_detection_fallback_seconds: float
     yolo_model_path: Path = field(init=False)
@@ -84,6 +88,7 @@ def load_config(path: Path) -> Config:
         yolo_source_model=path.parent / raw["yolo_source_model"],
         yolo_device=raw["yolo_device"],
         yolo_image_size=raw["yolo_image_size"],
+        dog_name=raw["dog_name"],
         dog_description=raw["dog_description"],
         no_detection_fallback_seconds=raw["no_detection_fallback_seconds"],
     )

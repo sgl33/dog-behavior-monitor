@@ -49,7 +49,7 @@ class WebServerClient:
             requests.post(
                 self._push_url,
                 json={
-                    "time": ts.strftime("%H:%M:%S"),
+                    "time": ts.astimezone().isoformat(timespec="seconds"),
                     "score": score,
                     "summary": summary,
                     "description": description,

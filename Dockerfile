@@ -13,6 +13,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ ./src/
-COPY prompt.txt .
+COPY prompts/ ./prompts/
 
 CMD ["python", "src/main.py"]

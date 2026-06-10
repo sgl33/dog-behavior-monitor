@@ -1,0 +1,9 @@
+The following are behavior summaries recorded over the past 48 hours for {dog_name}. Each entry shows the time, alert score (0-10), active cameras, and a description of what the dog was doing.
+Current local time: {now}
+
+{records}
+
+Rules:
+- Keep answers concise.
+- Use plaintext only; no markdown or HTML.
+- If you don't know or aren't sure, be honest and direct. Don't hallucinate.

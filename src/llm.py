@@ -13,11 +13,9 @@ from config import LLMEndpointConfig
 _JPEG_QUALITY = 85
 _LLM_MAX_WIDTH = 640
 _LLM_MAX_HEIGHT = 360
-_PROMPT_PATH = Path(__file__).parent.parent / "prompt.txt"
-_DETECT_PROMPT = (
-    "Look at each labeled camera feed. For each one, is {dog_description} visible? "
-    'Reply with JSON only: {{"cameras_with_dog": ["camera_name", ...]}}'
-)
+_PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+_ANALYZE_PROMPT_PATH = _PROMPTS_DIR / "analyze_prompt.txt"
+_DETECT_PROMPT_PATH = _PROMPTS_DIR / "detect_prompt.txt"
 
 
 class LLMClient:
@@ -28,14 +26,28 @@ class LLMClient:
         self._frame_sampling = [(t["seconds"], t["fps"]) for t in config.frame_sampling]
         self._crop_padding = config.crop_padding
         self._max_tokens = config.max_tokens
+        self._token = config.token
         self._headers = {"Authorization": f"Bearer {config.token}"} if config.token else {}
+        self._set_query_endpoint(config.query_url, config.query_token)
+
+    def set_model(self, model: str) -> None:
+        self._model = model
+
+    def set_query_endpoint(self, url: str | None, token: str | None) -> None:
+        self._set_query_endpoint(url, token)
+
+    def _set_query_endpoint(self, url: str | None, token: str | None) -> None:
+        base = url.rstrip("/") if url else self._url.rsplit("/chat/completions", 1)[0]
+        self._query_url = f"{base}/chat/completions"
+        q_token = token if token is not None else self._token
+        self._query_headers = {"Authorization": f"Bearer {q_token}"} if q_token else {}
 
     def analyze(
         self,
         frames_by_camera: dict[str, list[tuple[datetime, np.ndarray]]],
         boxes_by_camera: dict[str, list[tuple[int, int, int, int]]],
     ) -> tuple[str, list[np.ndarray]]:
-        prompt = _PROMPT_PATH.read_text().format(dog_description=self._dog_description)
+        prompt = _ANALYZE_PROMPT_PATH.read_text().format(dog_description=self._dog_description)
         content: list[dict] = [{"type": "text", "text": prompt}]
         sampled_frames: list[np.ndarray] = []
 
@@ -63,8 +75,24 @@ class LLMClient:
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"], sampled_frames
 
+    def summarize(self, prompt: str = "", max_tokens: int = 200, model: str | None = None, query: bool = False, messages: list[dict] | None = None) -> str:
+        url = self._query_url if query else self._url
+        headers = self._query_headers if query else self._headers
+        response = requests.post(
+            url,
+            headers=headers,
+            json={
+                "model": model or self._model,
+                "messages": messages if messages is not None else [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"] or ""
+
     def detect_dog(self, frames_by_camera: dict[str, np.ndarray]) -> list[str]:
-        content: list[dict] = [{"type": "text", "text": _DETECT_PROMPT.format(dog_description=self._dog_description)}]
+        content: list[dict] = [{"type": "text", "text": _DETECT_PROMPT_PATH.read_text().format(dog_description=self._dog_description)}]
         for camera, frame in frames_by_camera.items():
             content.append({"type": "text", "text": camera})
             content.append({

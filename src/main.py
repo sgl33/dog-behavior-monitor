@@ -10,6 +10,7 @@ from ultralytics import YOLO
 
 from commands import build_commands
 from config import Config, load_config
+from llm_logger import LLMOutputLogger
 from detector import Detector
 from llm import LLMClient
 from manager import Manager
@@ -99,6 +100,12 @@ def main():
         for camera, stream in config.streams.items()
     }
     llm_client = LLMClient(config=config.llm_endpoint, dog_description=config.dog_description)
+    llm_logger = LLMOutputLogger(
+        data_dir=Path(__file__).parent.parent / "data",
+        llm_client=llm_client,
+        dog_name=config.dog_name,
+        query_model=config.llm_endpoint.query_model,
+    )
     detectors = {
         camera: Detector(
             camera=camera,
@@ -119,6 +126,7 @@ def main():
         telegram_client=telegram_client,
         web_server=web_client,
         config=config,
+        llm_logger=llm_logger,
     )
 
     def _watch_config(path: Path) -> None:
@@ -130,9 +138,15 @@ def main():
                 if mtime == last_mtime:
                     continue
                 last_mtime = mtime
-                new_chat_ids = load_config(path).telegram.chat_ids
-                telegram_client.update_chat_ids(new_chat_ids)
-                logger.info("Reloaded chat_ids from config: %s", new_chat_ids)
+                new_config = load_config(path)
+                telegram_client.update_chat_ids(new_config.telegram.chat_ids)
+                logger.info("Reloaded chat_ids from config: %s", new_config.telegram.chat_ids)
+                llm_client.set_model(new_config.llm_endpoint.model)
+                logger.info("Reloaded LLM model: %s", new_config.llm_endpoint.model)
+                llm_client.set_query_endpoint(new_config.llm_endpoint.query_url, new_config.llm_endpoint.query_token)
+                logger.info("Reloaded query endpoint: url=%s", new_config.llm_endpoint.query_url)
+                llm_logger.set_query_model(new_config.llm_endpoint.query_model)
+                logger.info("Reloaded query model: %s", new_config.llm_endpoint.query_model)
             except Exception:
                 logger.exception("Failed to reload config")
 
@@ -145,6 +159,7 @@ def main():
         recorders=recorders,
         web_client=web_client,
         config=config,
+        llm_logger=llm_logger,
     ))
 
     for r in recorders.values():

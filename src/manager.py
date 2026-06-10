@@ -8,6 +8,7 @@ import numpy as np
 
 from config import Config
 from llm import LLMClient, extract_json
+from llm_logger import LLMOutputLogger
 from recorder import Recorder
 from state import DogDetectionState
 from telegram import TelegramClient
@@ -26,6 +27,7 @@ class Manager(threading.Thread):
         telegram_client: TelegramClient,
         web_server: WebServerClient | None,
         config: Config,
+        llm_logger: LLMOutputLogger | None = None,
     ):
         super().__init__(daemon=True, name="manager")
         self._cameras = cameras
@@ -39,6 +41,7 @@ class Manager(threading.Thread):
         self._loop_interval = config.manager_loop_interval
         self._slow_threshold = config.llm_endpoint.slow_threshold
         self._no_detection_interval = config.no_detection_fallback_seconds
+        self._llm_logger = llm_logger
         self._llm_busy = threading.Event()
         self._last_llm_time = 0.0
         self._last_llm_inference_latency: float | None = None
@@ -126,12 +129,14 @@ class Manager(threading.Thread):
 
             parsed = json.loads(extract_json(response))
             score, summary, description = parsed["score"], parsed["summary"], parsed["description"]
-            result_time = datetime.now()
+            result_time = datetime.now().astimezone()
             self._last_result = (score, description, result_time)
             self._last_frames = frames
             if self._web_server is not None:
                 self._web_server.push_result(score, summary, description, result_time, frames, self._last_llm_inference_latency, list(frames_by_camera.keys()), detected_by)
             logger.info("LLM result: %d - %s (%.2fs)", score, description, self._last_llm_inference_latency)
+            if self._llm_logger is not None:
+                self._llm_logger.log(result_time, score, summary, description, self._last_llm_inference_latency, list(frames_by_camera.keys()), detected_by)
             if self._llm_error:
                 self._llm_error = False
                 self._telegram_client.send_system_alert("✅ LLM recovered")

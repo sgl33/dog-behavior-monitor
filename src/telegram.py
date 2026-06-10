@@ -184,10 +184,12 @@ class TelegramClient:
                     msg = update.get("message", {})
                     chat_id = msg.get("chat", {}).get("id")
                     text = msg.get("text", "")
-                    command = text.split()[0] if text.startswith("/") else ""
-                    if chat_id and command in commands:
+                    key = (text.split()[0] if text.startswith("/") else None) if text else None
+                    with self._chat_ids_lock:
+                        allowed = chat_id in self._chat_ids
+                    if chat_id and key in commands and allowed:
                         try:
-                            result = commands[command](chat_id, text)
+                            result = commands[key](chat_id, text)
                             if isinstance(result, tuple):
                                 caption, frames = result
                                 requests.post(
@@ -209,7 +211,7 @@ class TelegramClient:
                                     timeout=10,
                                 )
                         except Exception:
-                            logger.exception("Failed to handle %s", command)
+                            logger.exception("Failed to handle %s", key)
             except Exception:
                 logger.exception("Poll error")
                 time.sleep(5)

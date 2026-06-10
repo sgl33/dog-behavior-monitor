@@ -2,13 +2,14 @@ from collections.abc import Callable
 from datetime import datetime
 
 from config import Config
+from llm_logger import LLMOutputLogger
 from manager import Manager
 from recorder import Recorder
 from telegram import TelegramClient
 from web_server import WebServerClient
 
 CommandMap = dict[
-    str,
+    str | None,
     Callable[
         [int, str],
         str | tuple[str, list]
@@ -22,6 +23,7 @@ def build_commands(
     recorders: dict[str, Recorder],
     web_client: WebServerClient,
     config: Config,
+    llm_logger: LLMOutputLogger,
 ) -> CommandMap:
     camera_stale_threshold = config.camera_stale_threshold
     live_stream_url = config.telegram.live_stream_url
@@ -49,7 +51,7 @@ def build_commands(
         if result is None:
             return "No LLM output yet."
         score, description, ts = result
-        age = (datetime.now() - ts).total_seconds()
+        age = (datetime.now().astimezone() - ts).total_seconds()
         if age < 60:
             age_str = f"{age:.0f}s ago"
         elif age < 3600:
@@ -124,6 +126,23 @@ def build_commands(
     def live_fn(_chat_id: int, _text: str) -> str:
         return f"📹 Live stream:\n{live_stream_url}"
 
+    def ask_fn(chat_id: int, text: str) -> str:
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            return "Usage: /ask <question>"
+        try:
+            return llm_logger.query(parts[1].strip(), chat_id=chat_id)
+        except Exception as e:
+            return f"❌ Error: {e}"
+
+    def catchall_fn(chat_id: int, text: str) -> str:
+        if not text.strip():
+            return "Usage: /ask <question>"
+        try:
+            return llm_logger.query(text.strip(), chat_id=chat_id)
+        except Exception as e:
+            return f"❌ Error: {e}"
+
     return {
         "/status": status_fn,
         "/last": last_fn,
@@ -133,4 +152,6 @@ def build_commands(
         "/sysalert": sysalert_fn,
         "/mute": mute_fn,
         "/unmute": unmute_fn,
+        "/ask": ask_fn,
+        None: catchall_fn,
     }

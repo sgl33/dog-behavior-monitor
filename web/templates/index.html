@@ -80,6 +80,10 @@ function esc(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 function scoreClass(s) { return s >= 7 ? 'high' : s >= 4 ? 'mid' : 'low'; }
+function fmtTime(t) {
+  const d = new Date(t);
+  return isNaN(d) ? t : d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+}
 
 function fmtCamera(cam) {
   return cam.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -93,8 +97,8 @@ function addCard(e) {
     ? `<img class="thumb" src="data:image/jpeg;base64,${e.thumb}">`
     : `<div class="no-thumb"></div>`;
   const timeStr = e.inference_time != null
-    ? `${esc(e.time)} · ${e.inference_time.toFixed(1)}s`
-    : esc(e.time);
+    ? `${fmtTime(e.time)} · ${e.inference_time.toFixed(1)}s`
+    : fmtTime(e.time);
   const summary = e.summary
     ? `<p class="summary">${esc(e.summary)}</p>`
     : '';

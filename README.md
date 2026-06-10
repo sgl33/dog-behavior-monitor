@@ -53,6 +53,7 @@ score - Set alert score threshold
 sysalert - Enable/disable system alerts
 mute - Temporarily mute alerts
 unmute - Resume receiving alerts
+ask - Ask AI a question (up to past 48 hours)
 ```
 
 You can also copy-paste this to BotFather.

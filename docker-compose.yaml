@@ -4,10 +4,11 @@ services:
     volumes:
       - ./src:/app/src
       - ./config.yaml:/app/config.yaml:ro
-      - ./prompt.txt:/app/prompt.txt:ro
+      - ./prompts:/app/prompts:ro
       - ./data:/app/data
     environment:
       - LOG_LEVEL=DEBUG
+      - TZ=America/Detroit
     extra_hosts:
       - "host.docker.internal:host-gateway"
     devices:

@@ -37,6 +37,8 @@ class Detector(threading.Thread):
         self._image_size = config.yolo_image_size
         self._telegram_client = telegram_client
         self._stop_event = threading.Event()
+        self._inference_behind = False
+        self._inference_behind_last_reported = 0.0
 
     def run(self) -> None:
         while not self._stop_event.is_set():
@@ -47,9 +49,22 @@ class Detector(threading.Thread):
                 inference_start = time.monotonic()
                 self._run_inference(frame)
                 inference_end = time.monotonic()
-                if (inference_end - inference_start > self._detect_interval):
-                    logger.warning("[%s] YOLO inference falling behind: %.1fs (interval: %.1fs)", self.camera, inference_end - inference_start, self._detect_interval)
-                    self._telegram_client.send_system_alert(f"⚠️ [{self.camera}] YOLO inference falling behind: {inference_end - inference_start:.1f}s (interval: {self._detect_interval}s)")
+                elapsed = inference_end - inference_start
+                if elapsed > self._detect_interval:
+                    if not self._inference_behind:
+                        self._inference_behind = True
+                        self._inference_behind_last_reported = elapsed
+                        logger.warning("[%s] YOLO inference falling behind: %.1fs (interval: %.1fs)", self.camera, elapsed, self._detect_interval)
+                        self._telegram_client.send_system_alert(f"⚠️ [{self.camera}] YOLO inference falling behind: {elapsed:.1f}s (interval: {self._detect_interval}s)")
+                    elif elapsed - self._inference_behind_last_reported >= 3.0:
+                        self._inference_behind_last_reported = elapsed
+                        logger.warning("[%s] YOLO inference falling behind: %.1fs (interval: %.1fs)", self.camera, elapsed, self._detect_interval)
+                        self._telegram_client.send_system_alert(f"⚠️ [{self.camera}] YOLO inference falling behind: {elapsed:.1f}s (interval: {self._detect_interval}s)")
+                elif self._inference_behind:
+                    self._inference_behind = False
+                    self._inference_behind_last_reported = 0.0
+                    logger.info("[%s] YOLO inference recovered: %.1fs (interval: %.1fs)", self.camera, elapsed, self._detect_interval)
+                    self._telegram_client.send_system_alert(f"✅ [{self.camera}] YOLO inference recovered: {elapsed:.1f}s (interval: {self._detect_interval}s)")
 
             elapsed = time.monotonic() - start
             self._stop_event.wait(max(0.0, self._detect_interval - elapsed))

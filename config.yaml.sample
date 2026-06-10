@@ -92,6 +92,7 @@ llm_endpoint:
 # YOLO is the primary detector. If it sees no dog for no_detection_fallback_seconds
 # continuous seconds, the LLM steps in to check for missed detections.
 
+fallback_detection_enabled: true
 no_detection_fallback_seconds: 10.0
 
 dog_name: Asbestos

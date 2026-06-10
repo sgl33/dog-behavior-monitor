@@ -85,7 +85,7 @@ def main():
     _tiers = config.llm_endpoint.frame_sampling
     _total_frames = sum(round(t["fps"] * t["seconds"]) for t in _tiers)
     _total_seconds = sum(t["seconds"] for t in _tiers)
-    video_fps = _total_frames / _total_seconds if _total_seconds > 0 else 5.0
+    video_fps = (_total_frames / _total_seconds if _total_seconds > 0 else 5.0) * 3
     telegram_client = TelegramClient(
         config=config.telegram,
         video_fps=video_fps,
@@ -149,6 +149,8 @@ def main():
                 llm_client.set_memory_model(ep.memory_model)
                 llm_client.set_memory_endpoint(ep.memory_url, ep.memory_token)
                 logger.info("Reloaded models: vision=%s fast=%s memory=%s", ep.vision_model, ep.fast_model, ep.memory_model)
+                manager.set_fallback_detection_enabled(new_config.fallback_detection_enabled)
+                logger.info("Reloaded fallback_detection_enabled=%s", new_config.fallback_detection_enabled)
             except Exception:
                 logger.exception("Failed to reload config")
 

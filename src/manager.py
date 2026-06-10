@@ -41,6 +41,7 @@ class Manager(threading.Thread):
         self._loop_interval = config.manager_loop_interval
         self._slow_threshold = config.llm_endpoint.slow_threshold
         self._no_detection_interval = config.no_detection_fallback_seconds
+        self._fallback_detection_enabled = config.fallback_detection_enabled
         self._llm_logger = llm_logger
         self._llm_busy = threading.Event()
         self._last_llm_time = 0.0
@@ -61,7 +62,7 @@ class Manager(threading.Thread):
                 if not self._llm_busy.is_set() and (now - self._last_llm_time) >= self._llm_cooldown:
                     logger.info("Dog detected, firing LLM")
                     self._fire_llm(fallback=False)
-            elif not self._llm_busy.is_set() and (now - self._last_llm_time) >= self._no_detection_interval:
+            elif self._fallback_detection_enabled and not self._llm_busy.is_set() and (now - self._last_llm_time) >= self._no_detection_interval:
                 logger.info("No dog detected, firing fallback LLM")
                 self._fire_llm(fallback=True)
             else:
@@ -186,6 +187,9 @@ class Manager(threading.Thread):
         fire_time = time.monotonic()
         threading.Thread(target=self._run_llm, args=(frames_by_camera, boxes_by_camera, fire_time, "YOLO"), daemon=True).start()
         return "✅ LLM analysis triggered"
+
+    def set_fallback_detection_enabled(self, enabled: bool) -> None:
+        self._fallback_detection_enabled = enabled
 
     def stop(self) -> None:
         self._stop_event.set()

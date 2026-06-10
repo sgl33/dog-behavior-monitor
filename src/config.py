@@ -70,6 +70,7 @@ class Config:
     dog_name: str
     dog_description: str
     no_detection_fallback_seconds: float
+    fallback_detection_enabled: bool
     yolo_model_path: Path = field(init=False)
 
     def __post_init__(self) -> None:
@@ -94,4 +95,5 @@ def load_config(path: Path) -> Config:
         dog_name=raw["dog_name"],
         dog_description=raw["dog_description"],
         no_detection_fallback_seconds=raw["no_detection_fallback_seconds"],
+        fallback_detection_enabled=raw.get("fallback_detection_enabled", True),
     )

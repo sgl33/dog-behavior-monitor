@@ -41,6 +41,8 @@ class TelegramClient:
         self._sysalert_disabled_path = data_dir / "sysalert_disabled.json"
         self._sysalert_disabled: set[int] = self._load_sysalert_disabled()
         self._mute_until: dict[int, float] = {}
+        self._alerts_dir = data_dir / "alerts"
+        self._alerts_dir.mkdir(exist_ok=True)
 
     def _load_thresholds(self) -> dict[int, int]:
         try:
@@ -120,7 +122,16 @@ class TelegramClient:
             self._chat_ids = chat_ids
             logger.info("Telegram chat IDs updated")
 
-    def send_alert(self, score: int, summary: str, description: str, frames: list[np.ndarray]) -> None:
+    def set_alert_threshold(self, threshold: int) -> None:
+        self._alert_threshold = threshold
+
+    def set_alert_cooldown(self, cooldown: float) -> None:
+        self._alert_cooldown = cooldown
+
+    def set_escalation_threshold(self, threshold: int) -> None:
+        self._escalation_threshold = threshold
+
+    def send_alert(self, score: int, summary: str, description: str, frames: list[np.ndarray], messages: list[dict] | None = None) -> None:
         with self._chat_ids_lock:
             now = time.monotonic()
             chat_ids = [cid for cid in self._chat_ids if self._mute_until.get(cid, 0.0) <= now]
@@ -140,6 +151,19 @@ class TelegramClient:
             {"text": "Logs", "url": self._logs_url},
         ]]})
         video_bytes = _compile_video(frames, self._video_fps)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        alert_path = self._alerts_dir / f"{ts}_score{score}.mp4"
+        try:
+            alert_path.write_bytes(video_bytes)
+        except OSError:
+            logger.exception("Failed to save alert video to %s", alert_path)
+        if messages is not None:
+            json_path = alert_path.with_suffix(".json")
+            try:
+                user_content = next((m["content"] for m in messages if m["role"] == "user"), [])
+                json_path.write_text(json.dumps(user_content, indent=2))
+            except OSError:
+                logger.exception("Failed to save alert JSON to %s", json_path)
         for chat_id in chat_ids:
             if score < thresholds[chat_id]:
                 continue
@@ -222,22 +246,28 @@ class TelegramClient:
 
 
 def _compile_video(frames: list[np.ndarray], fps: float) -> bytes:
+    if not frames:
+        raise ValueError("No frames to compile into video")
     with tempfile.TemporaryDirectory() as tmp_dir:
         for i, frame in enumerate(frames):
             resized = cv2.resize(frame, _VIDEO_SIZE, interpolation=cv2.INTER_AREA)
             cv2.imwrite(os.path.join(tmp_dir, f"f{i:04d}.jpg"), resized)
 
         out = os.path.join(tmp_dir, "out.mp4")
-        subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-framerate", str(int(fps)),
-                "-i", os.path.join(tmp_dir, "f%04d.jpg"),
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                out,
-            ],
-            check=True,
-            capture_output=True,
-        )
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-framerate", str(int(fps)),
+                    "-i", os.path.join(tmp_dir, "f%04d.jpg"),
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    out,
+                ],
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as e:
+            logger.error("ffmpeg failed (rc=%d): %s", e.returncode, e.stderr.decode(errors="replace"))
+            raise
         with open(out, "rb") as f:
             return f.read()

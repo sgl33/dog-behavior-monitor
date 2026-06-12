@@ -7,6 +7,7 @@ from datetime import datetime
 import numpy as np
 
 from config import Config
+from eval_saver import EvalSaver
 from llm import LLMClient, extract_json
 from llm_logger import LLMOutputLogger
 from recorder import Recorder
@@ -28,6 +29,7 @@ class Manager(threading.Thread):
         web_server: WebServerClient | None,
         config: Config,
         llm_logger: LLMOutputLogger | None = None,
+        eval_saver: EvalSaver | None = None,
     ):
         super().__init__(daemon=True, name="manager")
         self._cameras = cameras
@@ -43,6 +45,7 @@ class Manager(threading.Thread):
         self._fallback_detection_enabled = config.fallback_detection_enabled
         self._llm_enabled = True
         self._llm_logger = llm_logger
+        self._eval_saver = eval_saver
         self._llm_busy = threading.Event()
         self._last_llm_time = 0.0
         self._last_llm_finish_time = 0.0
@@ -50,8 +53,6 @@ class Manager(threading.Thread):
         self._llm_slow = False
         self._llm_error = False
         self._llm_consecutive_errors = 0
-        self._fallback_error = False
-        self._fallback_consecutive_errors = 0
         self._last_result: tuple[int, str, datetime] | None = None
         self._last_frames: list[np.ndarray] | None = None
         self._stop_event = threading.Event()
@@ -109,22 +110,25 @@ class Manager(threading.Thread):
             else:
                 logger.debug("Fallback: no dog found")
                 self._llm_busy.clear()
-            if self._fallback_error:
-                self._fallback_error = False
-                self._fallback_consecutive_errors = 0
-                self._telegram_client.send_system_alert("✅ Fallback LLM recovered")
+            if self._llm_error:
+                self._llm_error = False
+                self._llm_consecutive_errors = 0
+                self._telegram_client.send_system_alert("✅ LLM recovered")
         except Exception as e:
             logger.exception("Fallback check error")
-            self._fallback_consecutive_errors += 1
-            if self._fallback_consecutive_errors >= 3 and not self._fallback_error:
-                self._fallback_error = True
-                self._telegram_client.send_system_alert(f"⚠️ Fallback check error: {e}")
+            self._llm_consecutive_errors += 1
+            if self._llm_consecutive_errors >= 3 and not self._llm_error:
+                self._llm_error = True
+                self._telegram_client.send_system_alert(f"⚠️ LLM error: {e}")
             self._llm_busy.clear()
 
     def _run_llm(self, frames_by_camera: dict[str, list[tuple[datetime, np.ndarray]]], boxes_by_camera: dict[str, list[tuple[int, int, int, int]]], fire_time: float, detected_by: str = "YOLO") -> None:
         try:
+            if not any(frames_by_camera.values()):
+                logger.info("No frames available, skipping LLM inference")
+                return
             logger.info("LLM inference started")
-            response, frames = self._llm_client.analyze(frames_by_camera, boxes_by_camera)
+            response, frames, messages = self._llm_client.analyze(frames_by_camera, boxes_by_camera)
             self._last_llm_inference_latency = time.monotonic() - fire_time
             if self._last_llm_inference_latency > self._slow_threshold:
                 if not self._llm_slow:
@@ -148,7 +152,9 @@ class Manager(threading.Thread):
                 self._llm_error = False
                 self._llm_consecutive_errors = 0
                 self._telegram_client.send_system_alert("✅ LLM recovered")
-            self._telegram_client.send_alert(score, summary, description, frames)
+            if self._eval_saver is not None:
+                self._eval_saver.maybe_save(score, messages)
+            self._telegram_client.send_alert(score, summary, description, frames, messages)
         except Exception as e:
             logger.exception("LLM error")
             self._llm_consecutive_errors += 1
@@ -217,6 +223,18 @@ class Manager(threading.Thread):
 
     def set_fallback_detection_enabled(self, enabled: bool) -> None:
         self._fallback_detection_enabled = enabled
+
+    def set_post_llm_cooldown(self, cooldown: float) -> None:
+        self._post_llm_cooldown = cooldown
+
+    def set_detection_window(self, seconds: float) -> None:
+        self._detection_window = seconds
+
+    def set_slow_threshold(self, seconds: float) -> None:
+        self._slow_threshold = seconds
+
+    def set_no_detection_interval(self, seconds: float) -> None:
+        self._no_detection_interval = seconds
 
     def stop(self) -> None:
         self._stop_event.set()

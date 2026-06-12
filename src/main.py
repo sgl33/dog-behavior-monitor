@@ -11,6 +11,7 @@ from ultralytics import YOLO
 
 from commands import build_commands
 from config import Config, load_config
+from eval_saver import EvalSaver
 from llm_logger import LLMOutputLogger
 from detector import Detector
 from llm import LLMClient
@@ -106,6 +107,10 @@ def main():
         llm_client=llm_client,
         dog_name=config.dog_name,
     )
+    eval_saver = EvalSaver(
+        data_dir=Path(__file__).parent.parent / "data",
+        alert_threshold=config.telegram.alert_threshold,
+    )
     detectors = {
         camera: Detector(
             camera_name=camera,
@@ -127,6 +132,7 @@ def main():
         web_server=web_client,
         config=config,
         llm_logger=llm_logger,
+        eval_saver=eval_saver,
     )
 
     def _watch_config(path: Path) -> None:
@@ -139,8 +145,18 @@ def main():
                     continue
                 last_mtime = mtime
                 new_config = load_config(path)
-                telegram_client.update_chat_ids(new_config.telegram.chat_ids)
-                logger.info("Reloaded chat_ids from config: %s", new_config.telegram.chat_ids)
+
+                tg = new_config.telegram
+                telegram_client.update_chat_ids(tg.chat_ids)
+                telegram_client.set_alert_threshold(tg.alert_threshold)
+                telegram_client.set_alert_cooldown(tg.alert_cooldown)
+                telegram_client.set_escalation_threshold(tg.escalation_threshold)
+                eval_saver.set_alert_threshold(tg.alert_threshold)
+                logger.info(
+                    "Reloaded telegram: chat_ids=%s alert_threshold=%s alert_cooldown=%s escalation_threshold=%s",
+                    tg.chat_ids, tg.alert_threshold, tg.alert_cooldown, tg.escalation_threshold,
+                )
+
                 ep = new_config.llm_endpoint
                 llm_client.set_vision_model(ep.vision_model)
                 llm_client.set_vision_endpoint(ep.vision_url, ep.vision_token)
@@ -148,9 +164,34 @@ def main():
                 llm_client.set_fast_endpoint(ep.fast_url, ep.fast_token)
                 llm_client.set_memory_model(ep.memory_model)
                 llm_client.set_memory_endpoint(ep.memory_url, ep.memory_token)
-                logger.info("Reloaded models: vision=%s fast=%s memory=%s", ep.vision_model, ep.fast_model, ep.memory_model)
+                llm_client.set_dog_description(new_config.dog_description)
+                llm_client.set_frame_sampling(ep.frame_sampling)
+                llm_client.set_crop_padding(ep.crop_padding)
+                llm_client.set_max_tokens(ep.max_tokens)
+                logger.info(
+                    "Reloaded llm: vision=%s fast=%s memory=%s detection_window=%s crop_padding=%s max_tokens=%s",
+                    ep.vision_model, ep.fast_model, ep.memory_model,
+                    ep.detection_window, ep.crop_padding, ep.max_tokens,
+                )
+
+                llm_logger.set_dog_name(new_config.dog_name)
+
                 manager.set_fallback_detection_enabled(new_config.fallback_detection_enabled)
-                logger.info("Reloaded fallback_detection_enabled=%s", new_config.fallback_detection_enabled)
+                manager.set_post_llm_cooldown(new_config.post_llm_cooldown)
+                manager.set_detection_window(ep.detection_window)
+                manager.set_slow_threshold(ep.slow_threshold)
+                manager.set_no_detection_interval(new_config.no_detection_fallback_seconds)
+                logger.info(
+                    "Reloaded manager: fallback=%s post_cooldown=%s detection_window=%s slow_threshold=%s no_detection_interval=%s",
+                    new_config.fallback_detection_enabled, new_config.post_llm_cooldown,
+                    ep.detection_window, ep.slow_threshold, new_config.no_detection_fallback_seconds,
+                )
+
+                for det in detectors.values():
+                    det.set_detect_interval(new_config.detect_interval)
+                logger.info("Reloaded detect_interval=%s", new_config.detect_interval)
+
+                config.camera_stale_threshold = new_config.camera_stale_threshold
             except Exception:
                 logger.exception("Failed to reload config")
 

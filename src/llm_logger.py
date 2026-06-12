@@ -126,6 +126,9 @@ class LLMOutputLogger:
         self._cleanup()
         self._load_buffer()
 
+    def set_dog_name(self, name: str) -> None:
+        self._dog_name = name
+
     def _load_buffer(self) -> None:
         """
         Read `data/llm_outputs/buffer.jsonl` into `self._window_buffer`.

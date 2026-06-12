@@ -7,4 +7,5 @@ config.yaml
 data/llm_outputs/
 *.json
 *.jsonl
+*.mp4
 TODO.txt

@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -61,13 +62,25 @@ class LLMClient:
     def set_memory_endpoint(self, url: str, token: str | None) -> None:
         self._memory_url, self._memory_headers = self._endpoint(url, token)
 
+    def set_dog_description(self, description: str) -> None:
+        self._dog_description = description
+
+    def set_frame_sampling(self, tiers: list[dict]) -> None:
+        self._frame_sampling = [(t["seconds"], t["fps"]) for t in tiers]
+
+    def set_crop_padding(self, padding: float) -> None:
+        self._crop_padding = padding
+
+    def set_max_tokens(self, max_tokens: int) -> None:
+        self._max_tokens = max_tokens
+
     def analyze(
         self,
         frames_by_camera: dict[str, list[tuple[datetime, np.ndarray, str]]],
         boxes_by_camera: dict[str, list[tuple[int, int, int, int]]],
-    ) -> tuple[str, list[np.ndarray]]:
+    ) -> tuple[str, list[np.ndarray], list[dict]]:
         prompt = _ANALYZE_PROMPT_PATH.read_text().format(dog_description=self._dog_description)
-        content: list[dict] = [{"type": "text", "text": prompt}]
+        content: list[dict] = []
         sampled_frames: list[np.ndarray] = []
 
         for camera, frames in frames_by_camera.items():
@@ -86,37 +99,47 @@ class LLMClient:
                     "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
                 })
 
-        response = requests.post(
-            self._vision_url,
-            headers=self._vision_headers,
-            json={
-                "model": self._vision_model,
-                "messages": [{"role": "user", "content": content}],
-                "max_tokens": self._max_tokens,
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "dog_analysis",
-                        "strict": True,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "description": {"type": "string"},
-                                "summary": {"type": "string"},
-                                "score": {"type": "integer"},
-                            },
-                            "required": ["description", "summary", "score"],
-                            "additionalProperties": False,
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": content},
+        ]
+        payload = {
+            "model": self._vision_model,
+            "messages": messages,
+            "max_tokens": self._max_tokens,
+            "enable_thinking": False,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "dog_analysis",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "description": {"type": "string"},
+                            "summary": {"type": "string"},
+                            "score": {"type": "integer"},
                         },
+                        "required": ["description", "summary", "score"],
+                        "additionalProperties": False,
                     },
                 },
             },
-            timeout=60,
-        )
-        response.raise_for_status()
+        }
+        try:
+            response = requests.post(
+                self._vision_url,
+                headers=self._vision_headers,
+                json=payload,
+                timeout=60,
+            )
+            response.raise_for_status()
+        except Exception:
+            time.sleep(2)
+            raise
         content = response.json()["choices"][0]["message"]["content"]
         logger.info("LLM analyze: %s", content)
-        return content, sampled_frames
+        return content, sampled_frames, messages
 
     def summarize(
         self,
@@ -139,6 +162,7 @@ class LLMClient:
                 "model": model or self._vision_model,
                 "messages": messages if messages is not None else [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
+                "enable_thinking": False,
             },
             timeout=30,
         )
@@ -149,7 +173,7 @@ class LLMClient:
 
     def detect_dog(self, frames_by_camera: dict[str, np.ndarray]) -> list[str]:
         prompt = _DETECT_PROMPT_PATH.read_text().format(dog_description=self._dog_description)
-        content: list[dict] = [{"type": "text", "text": prompt}]
+        content: list[dict] = []
         for camera, frame in frames_by_camera.items():
             content.append({"type": "text", "text": camera})
             content.append({
@@ -158,8 +182,30 @@ class LLMClient:
             })
         payload = {
             "model": self._vision_model,
-            "messages": [{"role": "user", "content": content}],
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": content},
+            ],
             "max_tokens": self._max_tokens,
+            "enable_thinking": False,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "dog_detection",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "cameras_with_dog": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            }
+                        },
+                        "required": ["cameras_with_dog"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
         }
 
         def _call() -> set[str]:
@@ -182,6 +228,8 @@ class LLMClient:
 
 
 def extract_json(text: str) -> str:
+    # Strip reasoning blocks emitted by thinking models (e.g. Gemma, QwQ)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if match:
         return match.group(1)

@@ -103,5 +103,8 @@ class Detector(threading.Thread):
         if dog_boxes:
             self._state.update(self.camera)
 
+    def set_detect_interval(self, interval: float) -> None:
+        self._detect_interval = interval
+
     def stop(self) -> None:
         self._stop_event.set()

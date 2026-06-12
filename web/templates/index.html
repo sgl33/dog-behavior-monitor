@@ -107,7 +107,7 @@ function addCard(e) {
     ? `<img class="thumb" src="data:image/jpeg;base64,${e.thumb}">`
     : `<div class="no-thumb"></div>`;
   const timeStr = e.inference_time != null
-    ? `${fmtTime(e.time)} · ${e.inference_time.toFixed(1)}s`
+    ? `${fmtTime(e.time)} · ${e.inference_time.toFixed(2)}s`
     : fmtTime(e.time);
   const summary = e.summary
     ? `<p class="summary">${esc(e.summary)}</p>`

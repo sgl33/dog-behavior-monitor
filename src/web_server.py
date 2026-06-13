@@ -34,6 +34,7 @@ class WebServerClient:
         inference_time: float | None = None,
         cameras: list[str] | None = None,
         detected_by: str | None = None,
+        double_pass: bool = False,
     ) -> None:
         thumb = None
         if frames:
@@ -57,6 +58,7 @@ class WebServerClient:
                     "inference_time": inference_time,
                     "cameras": cameras,
                     "detected_by": detected_by,
+                    "double_pass": double_pass,
                 },
                 timeout=5,
             ).raise_for_status()

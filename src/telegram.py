@@ -1,23 +1,19 @@
 import json
 import logging
-import os
-import subprocess
-import tempfile
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-import cv2
 import numpy as np
 import requests
 
 from config import TelegramConfig
+from utils import compile_video
 
 logger = logging.getLogger(__name__)
 
 _API_BASE = "https://api.telegram.org"
-_VIDEO_SIZE = (960, 540)
 class TelegramClient:
     def __init__(
         self,
@@ -41,8 +37,10 @@ class TelegramClient:
         self._sysalert_disabled_path = data_dir / "sysalert_disabled.json"
         self._sysalert_disabled: set[int] = self._load_sysalert_disabled()
         self._mute_until: dict[int, float] = {}
+        self._save_alerts = config.save_alerts
         self._alerts_dir = data_dir / "alerts"
         self._alerts_dir.mkdir(exist_ok=True)
+        self._alerts_dir.chmod(0o777)
 
     def _load_thresholds(self) -> dict[int, int]:
         try:
@@ -136,37 +134,48 @@ class TelegramClient:
             now = time.monotonic()
             chat_ids = [cid for cid in self._chat_ids if self._mute_until.get(cid, 0.0) <= now]
             thresholds = {cid: self._thresholds.get(cid, self._alert_threshold) for cid in chat_ids}
-        if not chat_ids or score < min(thresholds.values()):
-            return
-        now = time.monotonic()
-        cooldown_expired = (now - self._last_alert_time) >= self._alert_cooldown
+
+        should_save = self._save_alerts and score >= self._alert_threshold
+        eligible_chats = [cid for cid in chat_ids if score >= thresholds[cid]]
+
+        now_mono = time.monotonic()
+        cooldown_expired = (now_mono - self._last_alert_time) >= self._alert_cooldown
         escalated = score >= self._last_alert_score + self._escalation_threshold
-        if not cooldown_expired and not escalated:
+        should_send = bool(eligible_chats) and (cooldown_expired or escalated)
+
+        if not should_save and not should_send:
             return
-        self._last_alert_time = now
+
+        video_bytes = compile_video(frames, self._video_fps)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+
+        if should_save:
+            alert_path = self._alerts_dir / f"{ts}_score{score}.mp4"
+            try:
+                alert_path.write_bytes(video_bytes)
+                alert_path.chmod(0o666)
+            except OSError:
+                logger.exception("Failed to save alert video to %s", alert_path)
+            if messages is not None:
+                json_path = alert_path.with_suffix(".json")
+                try:
+                    user_content = next((m["content"] for m in messages if m["role"] == "user"), [])
+                    json_path.write_text(json.dumps(user_content, indent=2))
+                    json_path.chmod(0o666)
+                except OSError:
+                    logger.exception("Failed to save alert JSON to %s", json_path)
+
+        if not should_send:
+            return
+
+        self._last_alert_time = now_mono
         self._last_alert_score = score
         text = f"{score} - {summary}\n\n{description}"
         reply_markup = json.dumps({"inline_keyboard": [[
             {"text": "Live Stream", "url": self._live_stream_url},
             {"text": "Logs", "url": self._logs_url},
         ]]})
-        video_bytes = _compile_video(frames, self._video_fps)
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        alert_path = self._alerts_dir / f"{ts}_score{score}.mp4"
-        try:
-            alert_path.write_bytes(video_bytes)
-        except OSError:
-            logger.exception("Failed to save alert video to %s", alert_path)
-        if messages is not None:
-            json_path = alert_path.with_suffix(".json")
-            try:
-                user_content = next((m["content"] for m in messages if m["role"] == "user"), [])
-                json_path.write_text(json.dumps(user_content, indent=2))
-            except OSError:
-                logger.exception("Failed to save alert JSON to %s", json_path)
-        for chat_id in chat_ids:
-            if score < thresholds[chat_id]:
-                continue
+        for chat_id in eligible_chats:
             requests.post(
                 f"{self._url}/sendVideo",
                 data={"chat_id": chat_id, "caption": text, "reply_markup": reply_markup},
@@ -225,7 +234,7 @@ class TelegramClient:
                                     json={"chat_id": chat_id, "text": caption},
                                     timeout=10,
                                 ).raise_for_status()
-                                video_bytes = _compile_video(frames, self._video_fps)
+                                video_bytes = compile_video(frames, self._video_fps)
                                 requests.post(
                                     f"{self._url}/sendVideo",
                                     data={"chat_id": chat_id},
@@ -245,29 +254,3 @@ class TelegramClient:
                 time.sleep(5)
 
 
-def _compile_video(frames: list[np.ndarray], fps: float) -> bytes:
-    if not frames:
-        raise ValueError("No frames to compile into video")
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        for i, frame in enumerate(frames):
-            resized = cv2.resize(frame, _VIDEO_SIZE, interpolation=cv2.INTER_AREA)
-            cv2.imwrite(os.path.join(tmp_dir, f"f{i:04d}.jpg"), resized)
-
-        out = os.path.join(tmp_dir, "out.mp4")
-        try:
-            subprocess.run(
-                [
-                    "ffmpeg", "-y",
-                    "-framerate", str(int(fps)),
-                    "-i", os.path.join(tmp_dir, "f%04d.jpg"),
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                    out,
-                ],
-                check=True,
-                capture_output=True,
-            )
-        except subprocess.CalledProcessError as e:
-            logger.error("ffmpeg failed (rc=%d): %s", e.returncode, e.stderr.decode(errors="replace"))
-            raise
-        with open(out, "rb") as f:
-            return f.read()

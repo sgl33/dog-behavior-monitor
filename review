@@ -1,0 +1,15 @@
+#!/bin/bash
+src="$1"
+# Strip .json or .mp4 to get the base path
+base="${src%.json}"
+base="${base%.mp4}"
+
+name="$(basename "$base")"
+if [ -n "$2" ]; then
+    name="${name/_score[0-9]*/_score$2}"
+fi
+dst="$(dirname "$base")/../reviewed/$name"
+mkdir -p "$(dirname "$dst")"
+
+[ -f "$base.json" ] && mv "$base.json" "$dst.json"
+[ -f "$base.mp4" ] && mv "$base.mp4" "$dst.mp4"

@@ -41,6 +41,7 @@ class Manager(threading.Thread):
         self._detection_window = config.llm_endpoint.detection_window
         self._post_llm_cooldown = config.post_llm_cooldown
         self._slow_threshold = config.llm_endpoint.slow_threshold
+        self._alert_threshold = config.telegram.alert_threshold
         self._no_detection_interval = config.no_detection_fallback_seconds
         self._fallback_detection_enabled = config.fallback_detection_enabled
         self._llm_enabled = True
@@ -140,12 +141,24 @@ class Manager(threading.Thread):
 
             parsed = json.loads(extract_json(response))
             score, summary, description = parsed["score"], parsed["summary"], parsed["description"]
+            logger.info("LLM result (pass 1): %d - %s (%.2fs)", score, description, self._last_llm_inference_latency)
+
+            double_pass = False
+            if score >= self._alert_threshold:
+                logger.info("Score %d >= threshold %d, running second pass to verify", score, self._alert_threshold)
+                response2, frames2, messages2 = self._llm_client.analyze(frames_by_camera, boxes_by_camera)
+                parsed2 = json.loads(extract_json(response2))
+                score, summary, description = parsed2["score"], parsed2["summary"], parsed2["description"]
+                frames, messages = frames2, messages2
+                double_pass = True
+                logger.info("LLM result (pass 2): %d - %s", score, description)
+
             result_time = datetime.now().astimezone()
             self._last_result = (score, description, result_time)
             self._last_frames = frames
             if self._web_server is not None:
-                self._web_server.push_result(score, summary, description, result_time, frames, self._last_llm_inference_latency, list(frames_by_camera.keys()), detected_by)
-            logger.info("LLM result: %d - %s (%.2fs)", score, description, self._last_llm_inference_latency)
+                self._web_server.push_result(score, summary, description, result_time, frames, self._last_llm_inference_latency, list(frames_by_camera.keys()), detected_by, double_pass)
+            logger.info("LLM final result: %d - %s (%.2fs)", score, description, self._last_llm_inference_latency)
             if self._llm_logger is not None:
                 self._llm_logger.log(result_time, score, summary, description, self._last_llm_inference_latency, list(frames_by_camera.keys()), detected_by)
             if self._llm_error:
@@ -153,7 +166,7 @@ class Manager(threading.Thread):
                 self._llm_consecutive_errors = 0
                 self._telegram_client.send_system_alert("✅ LLM recovered")
             if self._eval_saver is not None:
-                self._eval_saver.maybe_save(score, messages)
+                self._eval_saver.maybe_save(score, messages, frames)
             self._telegram_client.send_alert(score, summary, description, frames, messages)
         except Exception as e:
             logger.exception("LLM error")

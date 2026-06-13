@@ -110,6 +110,8 @@ def main():
     eval_saver = EvalSaver(
         data_dir=Path(__file__).parent.parent / "data",
         alert_threshold=config.telegram.alert_threshold,
+        video_fps=video_fps,
+        eval_cap=config.eval_cap,
     )
     detectors = {
         camera: Detector(
@@ -152,6 +154,7 @@ def main():
                 telegram_client.set_alert_cooldown(tg.alert_cooldown)
                 telegram_client.set_escalation_threshold(tg.escalation_threshold)
                 eval_saver.set_alert_threshold(tg.alert_threshold)
+                eval_saver.set_eval_cap(new_config.eval_cap)
                 logger.info(
                     "Reloaded telegram: chat_ids=%s alert_threshold=%s alert_cooldown=%s escalation_threshold=%s",
                     tg.chat_ids, tg.alert_threshold, tg.alert_cooldown, tg.escalation_threshold,

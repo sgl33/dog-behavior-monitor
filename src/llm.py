@@ -118,7 +118,7 @@ class LLMClient:
                         "properties": {
                             "description": {"type": "string"},
                             "summary": {"type": "string"},
-                            "score": {"type": "integer"},
+                            "score": {"type": "integer", "minimum": 0, "maximum": 10},
                         },
                         "required": ["description", "summary", "score"],
                         "additionalProperties": False,

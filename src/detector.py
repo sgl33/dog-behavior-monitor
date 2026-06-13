@@ -42,8 +42,8 @@ class Detector(threading.Thread):
         self._image_size = config.yolo_image_size
         self._telegram_client = telegram_client
         self._stop_event = threading.Event()
-        self._inference_behind = False
-        self._inference_behind_last_reported = 0.0
+        self._alerted_behind = False
+        self._alerted_critical = False
 
     def run(self) -> None:
         """
@@ -60,21 +60,24 @@ class Detector(threading.Thread):
                 self._run_inference(frame)
                 inference_end = time.monotonic()
 
-                # YOLO inference is falling behind
+                # YOLO inference lag alerts (alert once per threshold crossing)
                 elapsed = inference_end - inference_start
-                if elapsed > self._detect_interval:
-                    if (
-                        not self._inference_behind or 
-                        elapsed - self._inference_behind_last_reported >= 3.0
-                    ):
-                        msg = f"⚠️ [{self.camera}] YOLO inference falling behind: {elapsed:.2f}s (interval: {self._detect_interval}s)"
-                        self._inference_behind_last_reported = elapsed
+                if elapsed > self._detect_interval * 2:
+                    if not self._alerted_critical:
+                        self._alerted_critical = True
+                        self._alerted_behind = True
+                        msg = f"🔴 [{self.camera}] YOLO inference critically behind: {elapsed:.2f}s (2x interval: {self._detect_interval * 2:.2f}s)"
                         logger.warning(msg)
                         self._telegram_client.send_system_alert(msg)
-                # YOLO inference speed recovered
-                elif self._inference_behind:
-                    self._inference_behind = False
-                    self._inference_behind_last_reported = 0.0
+                elif elapsed > self._detect_interval:
+                    if not self._alerted_behind:
+                        self._alerted_behind = True
+                        msg = f"⚠️ [{self.camera}] YOLO inference falling behind: {elapsed:.2f}s (interval: {self._detect_interval}s)"
+                        logger.warning(msg)
+                        self._telegram_client.send_system_alert(msg)
+                elif self._alerted_behind:
+                    self._alerted_behind = False
+                    self._alerted_critical = False
                     msg = f"✅ [{self.camera}] YOLO inference recovered: {elapsed:.2f}s (interval: {self._detect_interval}s)"
                     logger.info(msg)
                     self._telegram_client.send_system_alert(msg)

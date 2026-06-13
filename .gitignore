@@ -4,8 +4,10 @@ src/__pycache__/
 env
 datasets
 config.yaml
+data/
 data/llm_outputs/
 *.json
 *.jsonl
 *.mp4
 TODO.txt
+.eval_processed_*

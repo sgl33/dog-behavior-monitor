@@ -52,6 +52,7 @@ class TelegramConfig:
     escalation_threshold: int
     live_stream_url: str
     logs_url: str
+    save_alerts: bool = True
 
 
 @dataclass
@@ -71,6 +72,7 @@ class Config:
     dog_description: str
     no_detection_fallback_seconds: float
     fallback_detection_enabled: bool
+    eval_cap: int
     yolo_model_path: Path = field(init=False)
 
     def __post_init__(self) -> None:
@@ -96,4 +98,5 @@ def load_config(path: Path) -> Config:
         dog_description=raw["dog_description"],
         no_detection_fallback_seconds=raw["no_detection_fallback_seconds"],
         fallback_detection_enabled=raw.get("fallback_detection_enabled", True),
+        eval_cap=raw.get("eval_cap", 200),
     )

@@ -29,10 +29,12 @@ recorder:
 # --- YOLO Object Detection ---
 
 yolo_source_model: src/yolo26n.pt
-# Path to the YOLO model weights. Exported to OpenVINO INT8 on first run.
+# Path to the YOLO model weights. Built-in options are `src/yolo26n.pt` and 
+# `src/yolo26s.pt`, but you can use other models too.
+# Exported to OpenVINO INT8 on first run if running on Intel iGPU.
 
 yolo_device: intel:GPU
-# Inference device (e.g. cpu, cuda:0, intel:GPU).
+# Inference device (supported: cpu, cuda:0, intel:GPU).
 
 yolo_image_size: 960
 # Input resolution for YOLO. Higher values improve accuracy but increase latency.

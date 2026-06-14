@@ -11,3 +11,4 @@ data/llm_outputs/
 *.mp4
 TODO.txt
 .eval_processed_*
+llm

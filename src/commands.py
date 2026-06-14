@@ -5,18 +5,15 @@ from collections.abc import Callable
 from datetime import datetime
 
 from config import Config
-from utils import format_age
 from llm_logger import LLMOutputLogger
 from manager import Manager
 from recorder import Recorder
 from telegram import TelegramClient
-from web_server import WebServerClient
-
 CommandMap = dict[
     str | None,
     Callable[
         [int, str],
-        str | tuple[str, list]
+        str | tuple[str, list] | tuple[str, dict]
     ]
 ]
 
@@ -25,7 +22,6 @@ def build_commands(
     telegram_client: TelegramClient,
     manager: Manager,
     recorders: dict[str, Recorder],
-    web_client: WebServerClient,
     config: Config,
     llm_logger: LLMOutputLogger,
 ) -> CommandMap:
@@ -35,11 +31,12 @@ def build_commands(
     """
     camera_stale_threshold = config.camera_stale_threshold
     live_stream_url = config.telegram.live_stream_url
+    logs_url = config.telegram.logs_url
 
-    def status_fn(_chat_id: int, _text: str) -> str:
+    def status_fn(_chat_id: int, _text: str) -> tuple[str, dict]:
         """
         Handler for `/status` command.
-        - `/status`: shows the status of all cameras and the most recent LLM 
+        - `/status`: shows the status of all cameras and the most recent LLM
             inference time
         """
         now = datetime.now()
@@ -62,26 +59,11 @@ def build_commands(
             f"⏱ Most recent LLM inference time: {latency:.1f}s"
             if latency is not None else "⏱ No LLM inference yet"
         )
-        return "\n".join(lines)
-
-    def last_fn(_chat_id: int, _text: str) -> str | tuple[str, list]:
-        """
-        Handler for `/last` command.
-        - `/last`: shows the most recent LLM output
-        """
-        result = manager.last_result
-        if result is None:
-            return "No LLM output yet."
-        score, description, ts = result
-
-        caption = (
-            f"[{format_age(ts)}] {score}: {description} "
-            f"(took {manager._last_llm_inference_latency:.2f} sec)"
-        )
-        frames = manager.last_frames
-        if frames:
-            return caption, frames
-        return caption
+        reply_markup = {"inline_keyboard": [[
+            {"text": "Live Stream", "url": live_stream_url},
+            {"text": "Logs", "url": logs_url},
+        ]]}
+        return "\n".join(lines), reply_markup
 
     def score_fn(chat_id: int, text: str) -> str:
         """
@@ -127,61 +109,64 @@ def build_commands(
         telegram_client.set_sysalert(chat_id, enabled)
         return f"System alerts turned {parts[1]}."
 
-    def mute_fn(chat_id: int, text: str) -> str:
+    def snooze_fn(chat_id: int, text: str) -> str:
         """
-        Handler for `/mute [#h|#m]` command.
-        - `/mute`: shows remaining mute time
-        - `/mute #h`: mutes alerts for the specified number of hours
-        - `/mute #m`: mutes alerts for the specified number of minutes
+        Handler for `/snooze [#h|#m|reset]` command.
+        - `/snooze`: shows remaining snooze time
+        - `/snooze #h`: snoozes alerts for the specified number of hours
+        - `/snooze #m`: snoozes alerts for the specified number of minutes
+        - `/snooze reset`: cancels the active snooze immediately
         """
-        remaining = telegram_client.mute_remaining(chat_id)
+        remaining = telegram_client.snooze_remaining(chat_id)
         parts = text.split()
         if len(parts) == 1:
             if remaining > 0:
                 mins = int(remaining // 60)
                 secs = int(remaining % 60)
-                return f"Alerts are muted for the next {mins} minutes {secs} seconds. Run /unmute to cancel."
-            return "Alerts are not muted. Run /mute #h (hours) or /mute #m (minutes) to mute."
+                return f"Alerts snoozed for the next {mins} minutes {secs} seconds. Run /snooze reset to cancel."
+            return "Alerts are not snoozed. Run /snooze #h (hours) or /snooze #m (minutes) to snooze."
         if len(parts) != 2:
-            return "Usage: /mute [{hrs}h|{mins}m] (example: `/mute 2h`, `/mute 30m`)"
+            return "Usage: /snooze [{hrs}h|{mins}m|reset] (example: `/snooze 2h`, `/snooze 30m`)"
 
-        time_str = parts[1]
+        arg = parts[1]
+        if arg == "reset":
+            if remaining == 0:
+                return "Alerts are not snoozed."
+            telegram_client.snooze_reset(chat_id)
+            return "Snooze cancelled."
+
         try:
-            if time_str.endswith("h"):
-                seconds = float(time_str[:-1]) * 3600
-            elif time_str.endswith("m"):
-                seconds = float(time_str[:-1]) * 60
+            if arg.endswith("h"):
+                seconds = float(arg[:-1]) * 3600
+            elif arg.endswith("m"):
+                seconds = float(arg[:-1]) * 60
             else:
-                return "Usage: /mute [{hrs}h|{mins}m]"
+                return "Usage: /snooze [{hrs}h|{mins}m|reset]"
         except ValueError:
-            return "Usage: /mute [{hrs}h|{mins}m]"
+            return "Usage: /snooze [{hrs}h|{mins}m|reset]"
 
-        telegram_client.mute(chat_id, seconds)
-        return f"Alerts muted for {time_str}."
+        telegram_client.snooze(chat_id, seconds)
+        return f"Alerts snoozed for {arg}."
+
+    def mute_fn(chat_id: int, _text: str) -> str:
+        """
+        Handler for `/mute` command.
+        - `/mute`: permanently mutes alerts until /unmute is run
+        """
+        if telegram_client.is_muted(chat_id):
+            return "Alerts are already muted. Run /unmute to resume."
+        telegram_client.mute(chat_id)
+        return "Alerts muted. Run /unmute to resume."
 
     def unmute_fn(chat_id: int, _text: str) -> str:
         """
         Handler for `/unmute` command.
-        - `/unmute`: unmutes alerts immediately
+        - `/unmute`: resumes alerts after /mute
         """
-        if telegram_client.mute_remaining(chat_id) == 0:
+        if not telegram_client.is_muted(chat_id):
             return "Alerts are not muted."
         telegram_client.unmute(chat_id)
         return "Alerts unmuted."
-
-    def logs_fn(_chat_id: int, _text: str) -> str:
-        """
-        Handler for `/logs` command.
-        - `/logs`: shows the URL to the live LLM feed
-        """
-        return f"📊 Live LLM feed:\n{web_client.public_url}"
-
-    def live_fn(_chat_id: int, _text: str) -> str:
-        """
-        Handler for `/live` command.
-        - `/live`: shows the URL to the live stream
-        """
-        return f"📹 Live stream:\n{live_stream_url}"
 
     def llm_fn(_chat_id: int, text: str) -> str:
         """
@@ -227,13 +212,11 @@ def build_commands(
 
     return {
         "/status": status_fn,
-        "/last": last_fn,
-        "/logs": logs_fn,
-        "/live": live_fn,
         "/score": score_fn,
         "/sysalert": sysalert_fn,
         "/mute": mute_fn,
         "/unmute": unmute_fn,
+        "/snooze": snooze_fn,
         "/llm": llm_fn,
         "/ask": ask_fn,
         None: catchall_fn,

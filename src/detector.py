@@ -62,17 +62,17 @@ class Detector(threading.Thread):
 
                 # YOLO inference lag alerts (alert once per threshold crossing)
                 elapsed = inference_end - inference_start
-                if elapsed > self._detect_interval * 2:
+                if elapsed > self._detect_interval * 3:
                     if not self._alerted_critical:
                         self._alerted_critical = True
                         self._alerted_behind = True
-                        msg = f"🔴 [{self.camera}] YOLO inference critically behind: {elapsed:.2f}s (2x interval: {self._detect_interval * 2:.2f}s)"
+                        msg = f"🔴 [{self.camera}] YOLO inference critically behind: {elapsed:.2f}s (3x interval: {self._detect_interval * 2:.2f}s)"
                         logger.warning(msg)
                         self._telegram_client.send_system_alert(msg)
-                elif elapsed > self._detect_interval:
+                elif elapsed > self._detect_interval * 1.5:
                     if not self._alerted_behind:
                         self._alerted_behind = True
-                        msg = f"⚠️ [{self.camera}] YOLO inference falling behind: {elapsed:.2f}s (interval: {self._detect_interval}s)"
+                        msg = f"⚠️ [{self.camera}] YOLO inference falling behind: {elapsed:.2f}s (1.5x interval: {self._detect_interval}s)"
                         logger.warning(msg)
                         self._telegram_client.send_system_alert(msg)
                 elif self._alerted_behind:

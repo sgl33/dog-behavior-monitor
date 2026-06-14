@@ -71,8 +71,11 @@ def main():
     cameras = list(config.streams.keys())
     state = DogDetectionState(cameras)
 
-    ensure_model_exported(config)
-    model = YOLO(config.yolo_model_path)
+    if config.yolo_device.startswith("intel"):
+        ensure_model_exported(config)
+        model = YOLO(config.yolo_model_path)
+    else:
+        model = YOLO(config.yolo_source_model)
     model.predict(
         np.zeros((config.yolo_image_size, config.yolo_image_size, 3), dtype=np.uint8),
         device=config.yolo_device,
@@ -86,7 +89,7 @@ def main():
     _tiers = config.llm_endpoint.frame_sampling
     _total_frames = sum(round(t["fps"] * t["seconds"]) for t in _tiers)
     _total_seconds = sum(t["seconds"] for t in _tiers)
-    video_fps = (_total_frames / _total_seconds if _total_seconds > 0 else 5.0) * 3
+    video_fps = (_total_frames / _total_seconds if _total_seconds > 0 else 5.0) * 4
     telegram_client = TelegramClient(
         config=config.telegram,
         video_fps=video_fps,
@@ -222,7 +225,6 @@ def main():
         telegram_client=telegram_client,
         manager=manager,
         recorders=recorders,
-        web_client=web_client,
         config=config,
         llm_logger=llm_logger,
     ))

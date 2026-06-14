@@ -36,7 +36,9 @@ class TelegramClient:
         self._thresholds: dict[int, int] = self._load_thresholds()
         self._sysalert_disabled_path = data_dir / "sysalert_disabled.json"
         self._sysalert_disabled: set[int] = self._load_sysalert_disabled()
-        self._mute_until: dict[int, float] = {}
+        self._muted_path = data_dir / "muted.json"
+        self._muted: set[int] = self._load_muted()
+        self._snooze_until: dict[int, float] = {}
         self._save_alerts = config.save_alerts
         self._alerts_dir = data_dir / "alerts"
         self._alerts_dir.mkdir(exist_ok=True)
@@ -78,6 +80,24 @@ class TelegramClient:
         except Exception:
             logger.exception("Failed to save sysalert prefs")
 
+    def _load_muted(self) -> set[int]:
+        try:
+            with open(self._muted_path) as f:
+                return set(json.load(f))
+        except FileNotFoundError:
+            return set()
+        except Exception:
+            logger.exception("Failed to load muted chats, starting fresh")
+            return set()
+
+    def _save_muted(self) -> None:
+        try:
+            self._muted_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._muted_path, "w") as f:
+                json.dump(list(self._muted), f)
+        except Exception:
+            logger.exception("Failed to save muted chats")
+
     def set_sysalert(self, chat_id: int, enabled: bool) -> None:
         with self._chat_ids_lock:
             if enabled:
@@ -101,19 +121,35 @@ class TelegramClient:
         with self._chat_ids_lock:
             return self._thresholds.get(chat_id, self._alert_threshold)
 
-    def mute(self, chat_id: int, seconds: float) -> None:
+    def mute(self, chat_id: int) -> None:
         with self._chat_ids_lock:
-            self._mute_until[chat_id] = time.monotonic() + seconds
-        logger.info("Alerts muted for chat %d for %.0fs", chat_id, seconds)
+            self._muted.add(chat_id)
+            self._save_muted()
+        logger.info("Alerts permanently muted for chat %d", chat_id)
 
     def unmute(self, chat_id: int) -> None:
         with self._chat_ids_lock:
-            self._mute_until.pop(chat_id, None)
+            self._muted.discard(chat_id)
+            self._save_muted()
         logger.info("Alerts unmuted for chat %d", chat_id)
 
-    def mute_remaining(self, chat_id: int) -> float:
+    def is_muted(self, chat_id: int) -> bool:
         with self._chat_ids_lock:
-            return max(0.0, self._mute_until.get(chat_id, 0.0) - time.monotonic())
+            return chat_id in self._muted
+
+    def snooze(self, chat_id: int, seconds: float) -> None:
+        with self._chat_ids_lock:
+            self._snooze_until[chat_id] = time.monotonic() + seconds
+        logger.info("Alerts snoozed for chat %d for %.0fs", chat_id, seconds)
+
+    def snooze_reset(self, chat_id: int) -> None:
+        with self._chat_ids_lock:
+            self._snooze_until.pop(chat_id, None)
+        logger.info("Snooze cancelled for chat %d", chat_id)
+
+    def snooze_remaining(self, chat_id: int) -> float:
+        with self._chat_ids_lock:
+            return max(0.0, self._snooze_until.get(chat_id, 0.0) - time.monotonic())
 
     def update_chat_ids(self, chat_ids: list[int]) -> None:
         with self._chat_ids_lock:
@@ -132,7 +168,7 @@ class TelegramClient:
     def send_alert(self, score: int, summary: str, description: str, frames: list[np.ndarray], messages: list[dict] | None = None) -> None:
         with self._chat_ids_lock:
             now = time.monotonic()
-            chat_ids = [cid for cid in self._chat_ids if self._mute_until.get(cid, 0.0) <= now]
+            chat_ids = [cid for cid in self._chat_ids if cid not in self._muted and self._snooze_until.get(cid, 0.0) <= now]
             thresholds = {cid: self._thresholds.get(cid, self._alert_threshold) for cid in chat_ids}
 
         should_save = self._save_alerts and score >= self._alert_threshold
@@ -174,6 +210,7 @@ class TelegramClient:
         reply_markup = json.dumps({"inline_keyboard": [[
             {"text": "Live Stream", "url": self._live_stream_url},
             {"text": "Logs", "url": self._logs_url},
+            {"text": "Snooze 5m", "callback_data": "snooze:300"},
         ]]})
         for chat_id in eligible_chats:
             requests.post(
@@ -188,7 +225,7 @@ class TelegramClient:
             now = time.monotonic()
             chat_ids = [
                 cid for cid in self._chat_ids
-                if cid not in self._sysalert_disabled and self._mute_until.get(cid, 0.0) <= now
+                if cid not in self._muted and cid not in self._sysalert_disabled and self._snooze_until.get(cid, 0.0) <= now
             ]
         for chat_id in chat_ids:
             requests.post(
@@ -213,11 +250,38 @@ class TelegramClient:
             try:
                 resp = requests.post(
                     f"{self._url}/getUpdates",
-                    json={"offset": offset, "timeout": 30, "allowed_updates": ["message"]},
+                    json={"offset": offset, "timeout": 30, "allowed_updates": ["message", "callback_query"]},
                     timeout=35,
                 )
                 for update in resp.json().get("result", []):
                     offset = update["update_id"] + 1
+
+                    if "callback_query" in update:
+                        cq = update["callback_query"]
+                        cq_id = cq["id"]
+                        chat_id = cq.get("message", {}).get("chat", {}).get("id")
+                        data = cq.get("data", "")
+                        with self._chat_ids_lock:
+                            allowed = chat_id in self._chat_ids
+                        toast = ""
+                        if chat_id and allowed and data.startswith("snooze:"):
+                            try:
+                                seconds = float(data.split(":", 1)[1])
+                                self.snooze(chat_id, seconds)
+                                mins = int(seconds // 60)
+                                toast = f"Snoozed for {mins} minute{'s' if mins != 1 else ''}."
+                            except (ValueError, IndexError):
+                                pass
+                        try:
+                            requests.post(
+                                f"{self._url}/answerCallbackQuery",
+                                json={"callback_query_id": cq_id, "text": toast},
+                                timeout=10,
+                            )
+                        except Exception:
+                            logger.exception("Failed to answer callback query")
+                        continue
+
                     msg = update.get("message", {})
                     chat_id = msg.get("chat", {}).get("id")
                     text = msg.get("text", "")
@@ -227,7 +291,14 @@ class TelegramClient:
                     if chat_id and key in commands and allowed:
                         try:
                             result = commands[key](chat_id, text)
-                            if isinstance(result, tuple):
+                            if isinstance(result, tuple) and isinstance(result[1], dict):
+                                text_body, reply_markup = result
+                                requests.post(
+                                    f"{self._url}/sendMessage",
+                                    json={"chat_id": chat_id, "text": text_body, "reply_markup": reply_markup},
+                                    timeout=10,
+                                )
+                            elif isinstance(result, tuple):
                                 caption, frames = result
                                 requests.post(
                                     f"{self._url}/sendMessage",

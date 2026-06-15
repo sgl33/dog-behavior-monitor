@@ -89,9 +89,3 @@ snooze - Temporarily snooze behavior alerts
 ```
 
 ## Tips
-
-Tips if you do want to use this app directly:
-
-- Find a model that works best for you.
-- Through trial and error, find configuration and prompt that works best for your dog and home.
-- Make sure to test thoroughly to minimize inaccuracies.

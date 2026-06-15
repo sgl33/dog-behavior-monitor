@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 import threading
@@ -67,6 +68,10 @@ def main():
         datefmt="%Y-%m-%dT%H:%M:%S",
     ))
     logging.basicConfig(level=level, handlers=[handler])
+    # Silence noisy third-party DEBUG chatter (per-connection HTTP logs) so it
+    # doesn't drown out app logs when LOG_LEVEL=DEBUG.
+    for noisy in ("urllib3", "requests"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     config = load_config(Path(__file__).parent.parent / "config.yaml")
     cameras = list(config.streams.keys())
     state = DogDetectionState(cameras)
@@ -183,13 +188,14 @@ def main():
                 llm_logger.set_dog_name(new_config.dog_name)
 
                 manager.set_fallback_detection_enabled(new_config.fallback_detection_enabled)
-                manager.set_post_llm_cooldown(new_config.post_llm_cooldown)
+                manager.set_cooldown(ep.cooldown)
+                manager.set_min_interval(ep.min_interval)
                 manager.set_detection_window(ep.detection_window)
                 manager.set_slow_threshold(ep.slow_threshold)
                 manager.set_no_detection_interval(new_config.no_detection_fallback_seconds)
                 logger.info(
-                    "Reloaded manager: fallback=%s post_cooldown=%s detection_window=%s slow_threshold=%s no_detection_interval=%s",
-                    new_config.fallback_detection_enabled, new_config.post_llm_cooldown,
+                    "Reloaded manager: fallback=%s cooldown=%s min_interval=%s detection_window=%s slow_threshold=%s no_detection_interval=%s",
+                    new_config.fallback_detection_enabled, ep.cooldown, ep.min_interval,
                     ep.detection_window, ep.slow_threshold, new_config.no_detection_fallback_seconds,
                 )
 
@@ -217,9 +223,19 @@ def main():
             except Exception:
                 logger.exception("Failed to push camera status")
 
+    def _healthcheck_ping() -> None:
+        while True:
+            try:
+                urllib.request.urlopen(config.healthcheck_url, timeout=10)
+            except Exception:
+                logger.exception("Healthcheck ping failed")
+            time.sleep(60)
+
     config_path = Path(__file__).parent.parent / "config.yaml"
     threading.Thread(target=_watch_config, args=(config_path,), daemon=True, name="config-watcher").start()
     threading.Thread(target=_push_camera_status, daemon=True, name="camera-status").start()
+    if config.healthcheck_url:
+        threading.Thread(target=_healthcheck_ping, daemon=True, name="healthcheck").start()
 
     telegram_client.start_polling(build_commands(
         telegram_client=telegram_client,
@@ -229,8 +245,12 @@ def main():
         llm_logger=llm_logger,
     ))
 
+    # Stagger recorder startup so we don't hit the relay with N simultaneous
+    # cold on-demand pulls, which makes the slowest streams exceed their open
+    # timeout and fail to connect.
     for r in recorders.values():
         r.start()
+        time.sleep(0.5)
     for d in detectors.values():
         d.start()
     manager.start()

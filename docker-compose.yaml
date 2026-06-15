@@ -11,19 +11,19 @@ services:
       - TZ=America/Detroit
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # Intel GPU (OpenVINO):
-    devices:
-      - /dev/dri/renderD128:/dev/dri/renderD128
-    group_add:
-      - "991"
-    # # Nvidia GPU:
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+    # # Intel GPU (OpenVINO):
+    # devices:
+    #   - /dev/dri/renderD128:/dev/dri/renderD128
+    # group_add:
+    #   - "991"
+    # Nvidia GPU:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     depends_on:
       - web
     restart: unless-stopped

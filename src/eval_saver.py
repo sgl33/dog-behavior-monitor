@@ -12,6 +12,11 @@ logger = logging.getLogger(__name__)
 
 
 class EvalSaver:
+    """
+    Saves video files and data to `data/alerts` and `data/eval` to be used for
+    LLM evaluation purposes.
+    """
+
     def __init__(self, data_dir: Path, alert_threshold: int, video_fps: float, eval_cap: int = 200):
         self._alert_threshold = alert_threshold
         self._video_fps = video_fps

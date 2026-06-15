@@ -138,7 +138,7 @@ class LLMClient:
             time.sleep(2)
             raise
         content = response.json()["choices"][0]["message"]["content"]
-        logger.info("LLM analyze: %s", content)
+        # logger.info("LLM analyze: %s", content)
         return content, sampled_frames, messages
 
     def summarize(

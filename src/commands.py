@@ -9,6 +9,7 @@ from llm_logger import LLMOutputLogger
 from manager import Manager
 from recorder import Recorder
 from telegram import TelegramClient
+
 CommandMap = dict[
     str | None,
     Callable[
@@ -51,14 +52,16 @@ def build_commands(
                 icon = "🟢" if age < camera_stale_threshold else "🔴"
                 lines.append(f"{icon} {camera}: last frame {age:.0f}s ago")
         latency = manager.last_llm_inference_latency
+        last_infer_time = manager.last_llm_finish_wall_time
 
         lines.append("")
         llm_state = "on" if manager.llm_enabled else "off"
         lines.append(f"🧠 LLM inference: {llm_state}")
-        lines.append(
-            f"⏱ Most recent LLM inference time: {latency:.1f}s"
-            if latency is not None else "⏱ No LLM inference yet"
-        )
+        if latency is not None and last_infer_time is not None:
+            age = (now - last_infer_time.replace(tzinfo=None)).total_seconds()
+            lines.append(f"⏱ Most recent LLM inference: {latency:.1f}s, {age:.0f}s ago")
+        else:
+            lines.append("⏱ No LLM inference yet")
         reply_markup = {"inline_keyboard": [[
             {"text": "Live Stream", "url": live_stream_url},
             {"text": "Logs", "url": logs_url},
@@ -178,7 +181,8 @@ def build_commands(
         parts = text.split()
         if len(parts) == 1:
             state = "on" if manager.llm_enabled else "off"
-            return f"LLM inference is {state}. Run /llm {'off' if manager.llm_enabled else 'on'} to change."
+            inverse_state = "off" if manager.llm_enabled else "on"
+            return (f"LLM inference is {state}. Run /llm {inverse_state} to change.")
         if len(parts) != 2 or parts[1] not in ("on", "off"):
             return "Usage: /llm [on|off]"
         enabled = parts[1] == "on"

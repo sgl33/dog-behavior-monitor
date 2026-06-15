@@ -1,3 +1,6 @@
+dog_name: Asbestos
+dog_description: a yellow golden retriever
+
 # --- Streams ---
 
 streams:
@@ -16,14 +19,19 @@ recorder:
   # Frames per second to capture from each stream.
   # Higher values give the LLM more frames to analyze but use more memory.
 
-  buffer_seconds: 5
-  # Rolling buffer size in seconds. Must be >= llm_endpoint.detection_window.
+  buffer_seconds: 10
+  # Rolling buffer size in seconds.
 
   offline_alert_seconds: 15.0
   # Seconds a stream must be unreachable before sending a Telegram alert.
 
   stale_stream_seconds: 10.0
   # Seconds without a new frame before the stream connection is treated as lost.
+
+  recovery_seconds: 5.0
+  # Seconds of continuous frames required after an outage before a
+  # "camera back online" alert is sent. Prevents a flapping stream from
+  # repeatedly toggling offline/online.
 
 
 # --- YOLO Object Detection ---
@@ -51,68 +59,59 @@ llm_endpoint:
   vision_url: http://host.docker.internal:1234/v1
   vision_token: fake-token
   # Multimodal model for frame analysis and dog detection. Minimum 32K context.
-  # WARNING: Local model strongly recommended; this software burns an estimated
-  # 400 million input tokens per DAY on a RTX 5090 with continuous usage. 
-  # Cloud API will be expensive!!
-  # (Use host.docker.internal instead of localhost inside Docker)
+  # See USAGE.md for details
 
   fast_model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
   fast_url: https://openrouter.ai/api/v1
   fast_token: your-token
   # Fast text model for minute summaries and query triage.
-  # Recommended: OpenRouter free model.
-  # Note: this endpoint will be called at least 288 times a day. If you are
-  # using a free OpenRouter model, add $10 to your account to increase your 
-  # daily limit from 50 to 1,000 per day.
+  # See USAGE.md for details
 
   memory_model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
   memory_url: https://openrouter.ai/api/v1
   memory_token: your-token
   # Conversational query model that analyzes a massive memory.
   # Minimum 128K context, 256K recommended.
+  # See USAGE.md for details
 
-  detection_window: 3.0
-  # Lookback window in seconds. A YOLO detection stays "active" within this window,
-  # and frames from this window are sent to the LLM.
+  detection_window: 5.0
+  # A YOLO detection stays "active" within this window (in seconds).
 
   frame_sampling:
     - seconds: 2
+      fps: 5
+    - seconds: 3
       fps: 3
-    - seconds: 1
-      fps: 1
-  # Tiered frame sampling, most-recent-first. Each tier specifies how many seconds
-  # to look back and at what fps to sample. Total seconds should not exceed detection_window.
+  # Tiered frame sampling, most-recent-first. Each tier specifies how many
+  # seconds to look back and at what framerate to sample.
+  # Must be less than `recorder.buffer_seconds`.
 
   crop_padding: 0.3
   # Fractional padding added around each YOLO bounding box before cropping.
 
   max_tokens: 1024
-  # Max tokens the LLM may output.
-  # Increase to 2048 for reasoning models (e.g. Gemma 4).
+  # Max tokens the LLM may output. Increase if you get JSON decoding errors
+  # on reasoning models.
 
-  cooldown: 3.0
-  # Minimum seconds between LLM calls while a dog is continuously detected.
+  cooldown: 1.0
+  # Minimum seconds between one LLM call finishing and the next one starting.
+
+  min_interval: 0.0
+  # Minimum seconds between LLM call starts, regardless of how long inference takes.
 
   slow_threshold: 30.0
   # LLM inference latency (seconds) above which a Telegram warning is sent.
 
 
 # --- Fallback Detection ---
-# YOLO is the primary detector. If it sees no dog for no_detection_fallback_seconds
-# continuous seconds, the LLM steps in to check for missed detections.
+# YOLO is the primary detector. If a dog is not detected by YOLO for
+# `no_detection_fallback_seconds`, the LLM steps in.
 
 fallback_detection_enabled: true
 no_detection_fallback_seconds: 10.0
 
-dog_name: Asbestos
-dog_description: a yellow golden retriever
-# Description passed to the LLM: "The dog is {dog_description}."
-
 
 # --- System ---
-
-post_llm_cooldown: 1.0
-# Minimum seconds between LLM finishing and the next LLM trigger.
 
 camera_stale_threshold: 15
 # Seconds since last frame before a camera is shown as stale in /status.
@@ -140,6 +139,13 @@ telegram:
   live_stream_url: "https://192.168.0.2:8971"
   logs_url: "http://192.168.0.2:8972"
   # live_stream_url and logs_url are included in alert messages.
+
+
+# --- Healthcheck ---
+
+# healthcheck_url: https://hc-ping.com/your-uuid-here
+# Optional. If set, pings this URL every 60 seconds so an uptime monitor
+# (e.g. healthchecks.io) can alert you if the process stops running.
 
 
 # --- Web Server ---

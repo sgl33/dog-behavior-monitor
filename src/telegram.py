@@ -208,9 +208,10 @@ class TelegramClient:
         self._last_alert_score = score
         text = f"{score} - {summary}\n\n{description}"
         reply_markup = json.dumps({"inline_keyboard": [[
-            {"text": "Live Stream", "url": self._live_stream_url},
+            {"text": "Live", "url": self._live_stream_url},
             {"text": "Logs", "url": self._logs_url},
-            {"text": "Snooze 5m", "callback_data": "snooze:300"},
+            {"text": "🔕 5m", "callback_data": "snooze:300"},
+            {"text": "🔕 15m", "callback_data": "snooze:900"},
         ]]})
         for chat_id in eligible_chats:
             requests.post(

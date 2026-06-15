@@ -1,3 +1,5 @@
+"""Config schema. See `sample-config.yaml` for info."""
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,6 +18,7 @@ class RecorderConfig:
     buffer_seconds: int
     offline_alert_seconds: float
     stale_stream_seconds: float
+    recovery_seconds: float = 5.0
 
 
 @dataclass
@@ -31,6 +34,7 @@ class LLMEndpointConfig:
     crop_padding: float
     max_tokens: int
     cooldown: float
+    min_interval: float
     slow_threshold: float
     vision_token: str | None = None
     fast_token: str | None = None
@@ -63,7 +67,6 @@ class Config:
     telegram: TelegramConfig
     web_server: WebServerConfig
     detect_interval: float
-    post_llm_cooldown: float
     camera_stale_threshold: int
     yolo_source_model: Path
     yolo_device: str
@@ -73,6 +76,7 @@ class Config:
     no_detection_fallback_seconds: float
     fallback_detection_enabled: bool
     eval_cap: int
+    healthcheck_url: str | None = None
     yolo_model_path: Path = field(init=False)
 
     def __post_init__(self) -> None:
@@ -89,7 +93,6 @@ def load_config(path: Path) -> Config:
         telegram=TelegramConfig(**raw["telegram"]),
         web_server=WebServerConfig(**raw["web_server"]),
         detect_interval=raw["detect_interval"],
-        post_llm_cooldown=raw["post_llm_cooldown"],
         camera_stale_threshold=raw["camera_stale_threshold"],
         yolo_source_model=path.parent / raw["yolo_source_model"],
         yolo_device=raw["yolo_device"],
@@ -99,4 +102,5 @@ def load_config(path: Path) -> Config:
         no_detection_fallback_seconds=raw["no_detection_fallback_seconds"],
         fallback_detection_enabled=raw.get("fallback_detection_enabled", True),
         eval_cap=raw.get("eval_cap", 200),
+        healthcheck_url=raw.get("healthcheck_url"),
     )

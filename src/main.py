@@ -14,7 +14,7 @@ from commands import build_commands
 from config import Config, load_config
 from eval_saver import EvalSaver
 from llm_logger import LLMOutputLogger
-from detector import Detector
+from detector import Detector, YoloLagMonitor
 from llm import LLMClient
 from manager import Manager
 from recorder import Recorder
@@ -51,6 +51,10 @@ _RESET = "\033[0m"
 
 
 class _ColorFormatter(logging.Formatter):
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        # strftime has no sub-second support, so append tenths of a second.
+        return f"{super().formatTime(record, datefmt)}.{int(record.msecs // 100)}"
+
     def format(self, record: logging.LogRecord) -> str:
         color = _LEVEL_COLORS.get(record.levelno, "")
         record.levelname = f"{color}{record.levelname:<8}{_RESET}"
@@ -85,6 +89,7 @@ def main():
         np.zeros((config.yolo_image_size, config.yolo_image_size, 3), dtype=np.uint8),
         device=config.yolo_device,
         imgsz=config.yolo_image_size,
+        half=True,
         verbose=False,
     )
     model_lock = threading.Lock()
@@ -121,6 +126,10 @@ def main():
         video_fps=video_fps,
         eval_cap=config.eval_cap,
     )
+    lag_monitor = YoloLagMonitor(
+        detect_interval=config.detect_interval,
+        telegram_client=telegram_client,
+    )
     detectors = {
         camera: Detector(
             camera_name=camera,
@@ -130,6 +139,7 @@ def main():
             model_lock=model_lock,
             telegram_client=telegram_client,
             config=config,
+            lag_monitor=lag_monitor,
         )
         for camera in cameras
     }
@@ -243,6 +253,7 @@ def main():
         recorders=recorders,
         config=config,
         llm_logger=llm_logger,
+        lag_monitor=lag_monitor,
     ))
 
     # Stagger recorder startup so we don't hit the relay with N simultaneous

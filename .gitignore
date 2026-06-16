@@ -12,3 +12,5 @@ data/llm_outputs/
 TODO.txt
 .eval_processed_*
 llm
+.env
+deploy

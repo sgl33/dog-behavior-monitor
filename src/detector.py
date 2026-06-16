@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+from datetime import datetime
 
 import numpy as np
 from ultralytics import YOLO
@@ -15,6 +16,78 @@ logger = logging.getLogger(__name__)
 _DOG_CLASS_ID = 16
 
 
+class YoloLagMonitor:
+    """
+    Tracks YOLO inference lag alert state shared across all detectors.
+
+    Alerts if the most recent YOLO inference took longer than the configured
+    detection interval, and recovers when it goes back within the interval.
+    """
+
+    # Only alert on "falling behind" once it has been sustained this long, to
+    # avoid noise from brief one-off spikes.
+    _BEHIND_GRACE_SECONDS = 2.0
+
+    def __init__(self, detect_interval: float, telegram_client: TelegramClient):
+        self._detect_interval = detect_interval
+        self._telegram_client = telegram_client
+        self._lock = threading.Lock()
+        self._alerted_behind = False
+        self._alerted_critical = False
+        self._behind_since: float | None = None
+        self._last_elapsed: float | None = None
+        self._last_time: datetime | None = None
+
+    def record(self, camera: str, elapsed: float) -> None:
+        """
+        Report one inference's elapsed time and send a Telegram alert if the
+        shared lag state changed.
+        """
+        with self._lock:
+            self._last_elapsed = elapsed
+            self._last_time = datetime.now()
+
+            now_mono = time.monotonic()
+
+            # Exceeds 3x interval
+            if elapsed > self._detect_interval * 3:  # exceeds 3x interval
+                if not self._alerted_critical:
+                    self._alerted_critical = True
+                    self._alerted_behind = True
+                    msg = f"🔴 [{camera}] YOLO inference critically behind: {elapsed:.2f}s "
+                    msg += f"(3x interval: {self._detect_interval * 3}s)"
+                    logger.warning(msg)
+                    self._telegram_client.send_system_alert(msg)
+            # Exceeds 1x interval
+            elif elapsed > self._detect_interval:
+                if self._behind_since is None:
+                    self._behind_since = now_mono
+                # Only alert once it's been falling behind for the grace period.
+                if not self._alerted_behind and now_mono - self._behind_since > self._BEHIND_GRACE_SECONDS:
+                    self._alerted_behind = True
+                    msg = f"⚠️ [{camera}] YOLO inference falling behind: {elapsed:.2f}s "
+                    msg += f"(interval: {self._detect_interval}s)"
+                    logger.warning(msg)
+                    self._telegram_client.send_system_alert(msg)
+            # Recovered under interval
+            else:
+                self._behind_since = None
+                if self._alerted_behind:
+                    self._alerted_behind = False
+                    self._alerted_critical = False
+                    msg = f"✅ [{camera}] YOLO inference recovered: {elapsed:.2f}s (interval: {self._detect_interval}s)"
+                    logger.info(msg)
+                    self._telegram_client.send_system_alert(msg, silent=True)
+
+    @property
+    def last_inference(self) -> tuple[float, datetime] | None:
+        """Most recent YOLO inference duration and when it finished, if any."""
+        with self._lock:
+            if self._last_elapsed is None or self._last_time is None:
+                return None
+            return self._last_elapsed, self._last_time
+
+
 class Detector(threading.Thread):
     """
     Periodically fetches frame from camera, runs it through YOLO for object
@@ -25,11 +98,12 @@ class Detector(threading.Thread):
         self,
         camera_name: str,
         recorder: Recorder,
-        state: DogDetectionState,  # pass by reference from manager
+        state: DogDetectionState,
         model: YOLO,
         model_lock: threading.Lock,
         telegram_client: TelegramClient,
         config: Config,
+        lag_monitor: YoloLagMonitor,
     ):
         super().__init__(daemon=True, name=f"detector-{camera_name}")
         self.camera = camera_name
@@ -42,8 +116,7 @@ class Detector(threading.Thread):
         self._image_size = config.yolo_image_size
         self._telegram_client = telegram_client
         self._stop_event = threading.Event()
-        self._alerted_behind = False
-        self._alerted_critical = False
+        self._lag_monitor = lag_monitor
 
     def run(self) -> None:
         """
@@ -60,27 +133,8 @@ class Detector(threading.Thread):
                 self._run_inference(frame)
                 inference_end = time.monotonic()
 
-                # YOLO inference lag alerts
-                elapsed = inference_end - inference_start
-                if elapsed > self._detect_interval * 3:  # exceeds 3x interval
-                    if not self._alerted_critical:
-                        self._alerted_critical = True
-                        self._alerted_behind = True
-                        msg = f"🔴 [{self.camera}] YOLO inference critically behind: {elapsed:.2f}s (3x interval: {self._detect_interval * 3:.2f}s)"
-                        logger.warning(msg)
-                        self._telegram_client.send_system_alert(msg)
-                elif elapsed > self._detect_interval:  # exceeds interval
-                    if not self._alerted_behind:
-                        self._alerted_behind = True
-                        msg = f"⚠️ [{self.camera}] YOLO inference falling behind: {elapsed:.2f}s (interval: {self._detect_interval}s)"
-                        logger.warning(msg)
-                        self._telegram_client.send_system_alert(msg)
-                elif self._alerted_behind:  # recovered
-                    self._alerted_behind = False
-                    self._alerted_critical = False
-                    msg = f"✅ [{self.camera}] YOLO inference recovered: {elapsed:.2f}s (interval: {self._detect_interval}s)"
-                    logger.info(msg)
-                    self._telegram_client.send_system_alert(msg)
+                # YOLO inference lag alerts (shared across all detectors)
+                self._lag_monitor.record(self.camera, inference_end - inference_start)
 
             elapsed = time.monotonic() - start
             self._stop_event.wait(max(0.0, self._detect_interval - elapsed))
@@ -92,8 +146,8 @@ class Detector(threading.Thread):
         """
         with self._model_lock:
             results = self._model.predict(
-                frame, device=self._device, 
-                imgsz=self._image_size, verbose=False
+                frame, device=self._device,
+                imgsz=self._image_size, half=True, verbose=False
             )
         boxes = results[0].boxes
         dog_boxes = [

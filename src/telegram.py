@@ -1,3 +1,4 @@
+import html
 import json
 import logging
 import threading
@@ -14,6 +15,18 @@ from utils import compile_video
 logger = logging.getLogger(__name__)
 
 _API_BASE = "https://api.telegram.org"
+
+
+def _footer_timestamp() -> str:
+    """Local-time timestamp with one decimal second, for message footers.
+
+    Returns HTML-formatted (italic) text; senders must use parse_mode="HTML".
+    """
+    now = time.time()
+    return f"<i>({time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}.{int(now % 1 * 10)})</i>"
+
+
+
 class TelegramClient:
     def __init__(
         self,
@@ -39,6 +52,8 @@ class TelegramClient:
         self._muted_path = data_dir / "muted.json"
         self._muted: set[int] = self._load_muted()
         self._snooze_until: dict[int, float] = {}
+        self._camera_online: dict[str, bool] = {}
+        self._camera_status_lock = threading.Lock()
         self._save_alerts = config.save_alerts
         self._alerts_dir = data_dir / "alerts"
         self._alerts_dir.mkdir(exist_ok=True)
@@ -156,6 +171,22 @@ class TelegramClient:
             self._chat_ids = chat_ids
             logger.info("Telegram chat IDs updated")
 
+    def register_camera(self, camera: str) -> None:
+        """Register a camera as online so it's counted in status summaries."""
+        with self._camera_status_lock:
+            self._camera_online.setdefault(camera, True)
+
+    def set_camera_online(self, camera: str, online: bool) -> None:
+        with self._camera_status_lock:
+            self._camera_online[camera] = online
+
+    def camera_status_summary(self) -> str:
+        """Returns e.g. "3 of 4 cameras online"."""
+        with self._camera_status_lock:
+            total = len(self._camera_online)
+            online = sum(1 for up in self._camera_online.values() if up)
+        return f"{online} of {total} cameras online"
+
     def set_alert_threshold(self, threshold: int) -> None:
         self._alert_threshold = threshold
 
@@ -206,7 +237,7 @@ class TelegramClient:
 
         self._last_alert_time = now_mono
         self._last_alert_score = score
-        text = f"{score} - {summary}\n\n{description}"
+        text = f"{score} - {html.escape(summary)}\n\n{html.escape(description)}\n\n{_footer_timestamp()}"
         reply_markup = json.dumps({"inline_keyboard": [[
             {"text": "Live", "url": self._live_stream_url},
             {"text": "Logs", "url": self._logs_url},
@@ -216,12 +247,12 @@ class TelegramClient:
         for chat_id in eligible_chats:
             requests.post(
                 f"{self._url}/sendVideo",
-                data={"chat_id": chat_id, "caption": text, "reply_markup": reply_markup},
+                data={"chat_id": chat_id, "caption": text, "parse_mode": "HTML", "reply_markup": reply_markup},
                 files={"video": ("alert.mp4", video_bytes, "video/mp4")},
                 timeout=60,
             ).raise_for_status()
 
-    def send_system_alert(self, description: str) -> None:
+    def send_system_alert(self, description: str, silent: bool = False) -> None:
         with self._chat_ids_lock:
             now = time.monotonic()
             chat_ids = [
@@ -231,7 +262,13 @@ class TelegramClient:
         for chat_id in chat_ids:
             requests.post(
                 f"{self._url}/sendMessage",
-                data={"chat_id": chat_id, "text": description},
+                # System alerts are always delivered silently (no notification sound).
+                data={
+                    "chat_id": chat_id,
+                    "text": f"{html.escape(description)}\n{_footer_timestamp()}",
+                    "parse_mode": "HTML",
+                    "disable_notification": True,
+                },
                 timeout=60,
             ).raise_for_status()
 

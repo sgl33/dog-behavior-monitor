@@ -5,6 +5,7 @@ from collections.abc import Callable
 from datetime import datetime
 
 from config import Config
+from detector import YoloLagMonitor
 from llm_logger import LLMOutputLogger
 from manager import Manager
 from recorder import Recorder
@@ -25,6 +26,7 @@ def build_commands(
     recorders: dict[str, Recorder],
     config: Config,
     llm_logger: LLMOutputLogger,
+    lag_monitor: YoloLagMonitor,
 ) -> CommandMap:
     """
     Returns a `CommandMap` object mapping Telegram commands to handler 
@@ -49,17 +51,28 @@ def build_commands(
                 lines.append(f"⚫ {camera}: no frames yet")
             else:
                 age = (now - ts).total_seconds()
-                icon = "🟢" if age < camera_stale_threshold else "🔴"
+                if age < camera_stale_threshold:
+                    icon = "🟢" if age < 5 else "🟡"
+                else:
+                    icon = "🔴"
                 lines.append(f"{icon} {camera}: last frame {age:.0f}s ago")
         latency = manager.last_llm_inference_latency
         last_infer_time = manager.last_llm_finish_wall_time
 
         lines.append("")
+        yolo_last = lag_monitor.last_inference
+        if yolo_last is not None:
+            yolo_elapsed, yolo_time = yolo_last
+            yolo_age = (now - yolo_time).total_seconds()
+            lines.append(f"👁 Last YOLO inference: {yolo_elapsed:.2f}s, {yolo_age:.1f}s ago")
+        else:
+            lines.append("👁 No YOLO inference yet")
+
         llm_state = "on" if manager.llm_enabled else "off"
         lines.append(f"🧠 LLM inference: {llm_state}")
         if latency is not None and last_infer_time is not None:
             age = (now - last_infer_time.replace(tzinfo=None)).total_seconds()
-            lines.append(f"⏱ Most recent LLM inference: {latency:.1f}s, {age:.0f}s ago")
+            lines.append(f"⏱ Last LLM inference: {latency:.2f}s, {age:.1f}s ago")
         else:
             lines.append("⏱ No LLM inference yet")
         reply_markup = {"inline_keyboard": [[

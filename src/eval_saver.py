@@ -31,14 +31,23 @@ class EvalSaver:
     def set_eval_cap(self, cap: int) -> None:
         self._eval_cap = cap
 
-    def maybe_save(self, score: int, messages: list[dict], frames: list[np.ndarray]) -> None:
+    def save_negative(
+        self, 
+        score: int, 
+        messages: list[dict], 
+        frames: list[np.ndarray],
+        chance: float = 0.05
+    ) -> None:
+        """
+        Save negative examples (under threshold) for LLM evaluation at a
+        random chance.
+        """
         if score >= self._alert_threshold:
             return
         existing = sum(1 for p in self._eval_dir.iterdir() if p.suffix == ".json")
-        if existing >= self._eval_cap:
+        if existing >= self._eval_cap or random.random() >= chance:
             return
-        if random.random() >= 0.05:
-            return
+
         ts = time.strftime("%Y%m%d_%H%M%S")
         base = self._eval_dir / f"{ts}_score{score}"
         user_content = next((m["content"] for m in messages if m["role"] == "user"), [])

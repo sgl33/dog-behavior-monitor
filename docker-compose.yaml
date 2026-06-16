@@ -6,9 +6,17 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - ./prompts:/app/prompts:ro
       - ./data:/app/data
+      # NVIDIA GPU
+      - /tmp/nvidia-mps:/tmp/nvidia-mps
+      - /tmp/nvidia-log:/tmp/nvidia-log
     environment:
       - LOG_LEVEL=DEBUG
       - TZ=America/Detroit
+      # NVIDIA GPU
+      - CUDA_MPS_PIPE_DIRECTORY=/tmp/nvidia-mps
+      - CUDA_MPS_LOG_DIRECTORY=/tmp/nvidia-log
+      - CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=4
+    ipc: host
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # # Intel GPU (OpenVINO):

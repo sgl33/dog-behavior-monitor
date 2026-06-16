@@ -73,6 +73,29 @@ docker compose down
 
 The containers will start automatically when the server restarts, unless manually stopped.
 
+### Sharing one GPU between vLLM and YOLO (CUDA MPS)
+
+If the YOLO detector and the vLLM server run on the **same** NVIDIA GPU, enable the
+CUDA Multi-Process Service (MPS) so their kernels overlap on the SMs instead of
+serializing — this avoids vLLM token-latency jitter caused by YOLO's periodic
+inference bursts.
+
+1. Install the host MPS daemon (runs as root, starts before Docker, survives reboots):
+   ```
+   sudo cp deploy/nvidia-mps.service /etc/systemd/system/nvidia-mps.service
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now nvidia-mps
+   ```
+2. The compose files are already wired for it: both the detector (`docker-compose.yaml`)
+   and vLLM (`llm/qwen3-vl-8b.yaml`) mount the MPS pipe, set `ipc: host`, and cap their
+   SM share via `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE` (detector 4%, vLLM 96%). These caps
+   are independent limits, not a partition — tune them to taste.
+3. Verify both container processes show type **`M+C`** in `nvidia-smi`. Plain `C` means a
+   container didn't join the daemon (check `ipc: host` and the `/tmp/nvidia-mps` mount).
+
+If YOLO inference starts falling behind (you'll get a Telegram alert), raise the detector's
+percentage; this barely affects vLLM since YOLO only bursts roughly once per `detect_interval`.
+
 ## Telegram
 
 You can use the following Telegram commands:

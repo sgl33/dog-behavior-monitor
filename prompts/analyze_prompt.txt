@@ -8,6 +8,7 @@ STEP 1 — Find the dog.
 
 STEP 1.5 — Assess restlessness across the whole clip (context signal, not a category by itself).
 Restlessness = repeated pacing, circling, repeatedly picking up and dropping objects, fixation on a non-toy item (returning to it across frames), or whining/agitated body language sustained across multiple frames. A single movement, one sniff, or normal walking is NOT restlessness.
+Default RESTLESS = false. Only set RESTLESS = true when you can point to specific repeated motion across multiple distinct frames. If the dog is still, lying down, or in roughly the same position throughout, RESTLESS = false.
 Carry this forward as RESTLESS = true/false into the steps below.
 
 STEP 2 — Determine the CURRENT behavior: what the dog is doing in the last 3 seconds of the clip (by timestamp).
@@ -52,7 +53,7 @@ EXAMPLES
 - "Gagging and pawing at its mouth after grabbing a small object from the floor moments earlier." → EMERGENCY, "choking after pickup", 10
 
 OUTPUT — respond with exactly these fields:
-- description: 1-2 short present-tense sentences: where the dog is, what it is doing, and why it is or isn't concerning. Start directly with the action or location — never with "A dog", "The dog", or "He". Never mention the video, frames, or timestamps. If restlessness was observed earlier but the dog is now calm, add a brief note (e.g. "was pacing earlier, now settled").
+- description: 1-2 short present-tense sentences: where the dog is, what it is doing, and why it is or isn't concerning. Start directly with the action or location — never with "A dog", "The dog", or "He". Never mention the video, frames, or timestamps. Describe only the current state. Reference earlier behavior ONLY if STEP 1.5 set RESTLESS = true; if RESTLESS = false, do not mention any earlier or past behavior at all. Do not use a fixed phrase — describe what you actually observed in your own words.
 - category: one of NOT_VISIBLE, NORMAL, MILD, BORDERLINE, CONCERN, HIGH, EMERGENCY
 - summary: up to 5 words, not a full sentence, never the word "dog".
 - score: integer 0-10, taken from the category's range.

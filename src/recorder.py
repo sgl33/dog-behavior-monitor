@@ -37,6 +37,7 @@ class Recorder(threading.Thread):
         self.camera = camera
         self._rtsp_url = rtsp_url
         self._telegram_client = telegram_client
+        self._telegram_client.register_camera(camera)
         self._fps = config.fps
         self._offline_alert_seconds = config.offline_alert_seconds
         self._stale_stream_seconds = config.stale_stream_seconds
@@ -103,7 +104,11 @@ class Recorder(threading.Thread):
                                 healthy_since = now
                             elif now - healthy_since >= self._recovery_seconds:
                                 logger.info("%s camera back online", self.camera)
-                                self._telegram_client.send_system_alert(f"✅ [{self.camera}] camera back online")
+                                self._telegram_client.set_camera_online(self.camera, True)
+                                self._telegram_client.send_system_alert(
+                                    f"✅ [{self.camera}] camera back online - {self._telegram_client.camera_status_summary()}",
+                                    silent=True,
+                                )
                                 offline_alerted = False
                                 healthy_since = None
 
@@ -112,7 +117,10 @@ class Recorder(threading.Thread):
 
                 if not offline_alerted and time.monotonic() - last_good_frame_mono >= self._offline_alert_seconds:
                     logger.warning("%s camera offline", self.camera)
-                    self._telegram_client.send_system_alert(f"📵 [{self.camera}] camera offline")
+                    self._telegram_client.set_camera_online(self.camera, False)
+                    self._telegram_client.send_system_alert(
+                        f"📵 [{self.camera}] camera offline - {self._telegram_client.camera_status_summary()}"
+                    )
                     offline_alerted = True
                     healthy_since = None
 

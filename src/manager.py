@@ -130,7 +130,10 @@ class Manager(threading.Thread):
         are detected, send the video clips through the same LLM.
         """
         try:
-            cameras_with_dog = self._llm_client.detect_dog(latest_frames)
+            cameras_with_dog = self._llm_client.detect_dog(
+                latest_frames,
+                should_abort=lambda: self._state.any_recent(within_seconds=self._detection_window),
+            )
             if cameras_with_dog:
                 if self._state.any_recent(within_seconds=self._detection_window):
                     logger.info("Fallback detected dog in %s, YOLO confirmed — main loop will handle", cameras_with_dog)
@@ -204,13 +207,14 @@ class Manager(threading.Thread):
             if self._llm_logger is not None:
                 self._llm_logger.log(result_time, score, summary, description, self._last_llm_inference_latency, list(frames_by_camera.keys()), detected_by)
             if self._eval_saver is not None:
-                self._eval_saver.maybe_save(score, messages, frames)
+                self._eval_saver.save_negative(score, messages, frames)
 
             # Handle sending alert(s)
             self._handle_llm_recovered()
             self._telegram_client.send_alert(score, summary, description, frames, messages)
         except Exception as e:
             logger.exception("LLM error")
+            time.sleep(2)  # backoff before the next inference attempt
             self._handle_llm_error(e)
             self._last_llm_finish_time = time.monotonic()
             self._last_llm_finish_wall_time = datetime.now().astimezone()
@@ -226,7 +230,7 @@ class Manager(threading.Thread):
                 self._telegram_client.send_system_alert(f"⚠️ LLM inference slow: {latency:.1f}s")
         elif self._llm_slow:
             self._llm_slow = False
-            self._telegram_client.send_system_alert(f"✅ LLM inference back to normal: {latency:.1f}s")
+            self._telegram_client.send_system_alert(f"✅ LLM inference back to normal: {latency:.1f}s", silent=True)
 
     def _handle_llm_error(self, e: Exception) -> None:
         """
@@ -265,7 +269,7 @@ class Manager(threading.Thread):
         if self._llm_error:
             self._llm_error = False
             self._llm_consecutive_errors = 0
-            self._telegram_client.send_system_alert("✅ LLM recovered")
+            self._telegram_client.send_system_alert("✅ LLM recovered", silent=True)
 
     @property
     def last_llm_inference_latency(self) -> float | None:

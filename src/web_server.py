@@ -1,12 +1,17 @@
 import base64
 import logging
+import time
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
 import requests
 
-from config import WebServerConfig
+from config import Config, WebServerConfig
+
+if TYPE_CHECKING:
+    from recorder import Recorder
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +70,7 @@ class WebServerClient:
         except Exception:
             logger.warning("Failed to push result to web server")
 
-    def push_camera_status(self, statuses: dict[str, bool]) -> None:
+    def push_camera_status(self, statuses: dict[str, dict]) -> None:
         try:
             requests.post(
                 self._push_url.replace("/push", "/push_cameras"),
@@ -74,3 +79,31 @@ class WebServerClient:
             ).raise_for_status()
         except Exception:
             logger.warning("Failed to push camera status to web server")
+
+    def run_camera_status_loop(self, recorders: dict[str, "Recorder"], config: Config) -> None:
+        """
+        Push camera status to web server via HTTP, every second. For each camera
+        we report the seconds since its last frame and a state: "ok" (<5s),
+        "warn" (5s up to the stale threshold), or "err" (stale / no frames).
+        """
+        while True:
+            time.sleep(1)
+            try:
+                now = datetime.now()
+                statuses = {}
+                for cam, rec in recorders.items():
+                    ts = rec.last_frame_time()
+                    if ts is None:
+                        statuses[cam] = {"state": "err", "age": None}
+                        continue
+                    age = (now - ts).total_seconds()
+                    if age >= config.camera_stale_threshold:
+                        state = "err"
+                    elif age >= 5:
+                        state = "warn"
+                    else:
+                        state = "ok"
+                    statuses[cam] = {"state": state, "age": age}
+                self.push_camera_status(statuses)
+            except Exception:
+                logger.exception("Failed to push camera status")

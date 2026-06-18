@@ -10,24 +10,23 @@ import numpy as np
 import requests
 
 from config import TelegramConfig
-from utils import compile_video
+from utils import compile_video, footer_timestamp
 
 logger = logging.getLogger(__name__)
 
 _API_BASE = "https://api.telegram.org"
 
-
-def _footer_timestamp() -> str:
-    """Local-time timestamp with one decimal second, for message footers.
-
-    Returns HTML-formatted (italic) text; senders must use parse_mode="HTML".
-    """
-    now = time.time()
-    return f"<i>({time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}.{int(now % 1 * 10)})</i>"
-
+# Handler for Telegram command: (chat_id, command) -> (response, reply_markup)
+CommandHandler = Callable[[int, str], tuple[str, dict | None]]
 
 
 class TelegramClient:
+    """
+    Client for interfacing with the Telegram bot to send alerts and receive
+    commands/messages. Also manages individual user preferences for alert
+    thresholds, snoozing, and system alert opt-out.
+    """
+
     def __init__(
         self,
         config: TelegramConfig,
@@ -54,12 +53,9 @@ class TelegramClient:
         self._snooze_until: dict[int, float] = {}
         self._camera_online: dict[str, bool] = {}
         self._camera_status_lock = threading.Lock()
-        self._save_alerts = config.save_alerts
-        self._alerts_dir = data_dir / "alerts"
-        self._alerts_dir.mkdir(exist_ok=True)
-        self._alerts_dir.chmod(0o777)
 
     def _load_thresholds(self) -> dict[int, int]:
+        """Returns alert score thresholds by chat ID."""
         try:
             with open(self._thresholds_path) as f:
                 return {int(k): v for k, v in json.load(f).items()}
@@ -181,11 +177,11 @@ class TelegramClient:
             self._camera_online[camera] = online
 
     def camera_status_summary(self) -> str:
-        """Returns e.g. "3 of 4 cameras online"."""
+        """Returns e.g. "3 of 4 online"."""
         with self._camera_status_lock:
             total = len(self._camera_online)
             online = sum(1 for up in self._camera_online.values() if up)
-        return f"{online} of {total} cameras online"
+        return f"{online} of {total} online"
 
     def set_alert_threshold(self, threshold: int) -> None:
         self._alert_threshold = threshold
@@ -196,13 +192,26 @@ class TelegramClient:
     def set_escalation_threshold(self, threshold: int) -> None:
         self._escalation_threshold = threshold
 
-    def send_alert(self, score: int, summary: str, description: str, frames: list[np.ndarray], messages: list[dict] | None = None) -> None:
+    def send_alert(
+        self, 
+        score: int, 
+        summary: str, 
+        description: str, 
+        frames: list[np.ndarray]
+    ) -> None:
+        """
+        Send behavioral alerts to eligible chat IDs.
+
+        Raises exception from `requests.post`.
+        """
         with self._chat_ids_lock:
             now = time.monotonic()
-            chat_ids = [cid for cid in self._chat_ids if cid not in self._muted and self._snooze_until.get(cid, 0.0) <= now]
+            chat_ids = [
+                cid for cid in self._chat_ids
+                if cid not in self._muted
+                and self._snooze_until.get(cid, 0.0) <= now
+            ]
             thresholds = {cid: self._thresholds.get(cid, self._alert_threshold) for cid in chat_ids}
-
-        should_save = self._save_alerts and score >= self._alert_threshold
         eligible_chats = [cid for cid in chat_ids if score >= thresholds[cid]]
 
         now_mono = time.monotonic()
@@ -210,75 +219,92 @@ class TelegramClient:
         escalated = score >= self._last_alert_score + self._escalation_threshold
         should_send = bool(eligible_chats) and (cooldown_expired or escalated)
 
-        if not should_save and not should_send:
-            return
-
-        video_bytes = compile_video(frames, self._video_fps)
-        ts = time.strftime("%Y%m%d_%H%M%S")
-
-        if should_save:
-            alert_path = self._alerts_dir / f"{ts}_score{score}.mp4"
-            try:
-                alert_path.write_bytes(video_bytes)
-                alert_path.chmod(0o666)
-            except OSError:
-                logger.exception("Failed to save alert video to %s", alert_path)
-            if messages is not None:
-                json_path = alert_path.with_suffix(".json")
-                try:
-                    user_content = next((m["content"] for m in messages if m["role"] == "user"), [])
-                    json_path.write_text(json.dumps(user_content, indent=2))
-                    json_path.chmod(0o666)
-                except OSError:
-                    logger.exception("Failed to save alert JSON to %s", json_path)
-
         if not should_send:
             return
 
+        # Construct payload
+        video_bytes = compile_video(frames, self._video_fps)
         self._last_alert_time = now_mono
         self._last_alert_score = score
-        text = f"{score} - {html.escape(summary)}\n\n{html.escape(description)}\n\n{_footer_timestamp()}"
+        text = f"{score} - {html.escape(summary)}\n\n{html.escape(description)}\n\n{footer_timestamp()}"
         reply_markup = json.dumps({"inline_keyboard": [[
             {"text": "Live", "url": self._live_stream_url},
             {"text": "Logs", "url": self._logs_url},
             {"text": "🔕 5m", "callback_data": "snooze:300"},
             {"text": "🔕 15m", "callback_data": "snooze:900"},
         ]]})
+
+        # Send payload
         for chat_id in eligible_chats:
             requests.post(
                 f"{self._url}/sendVideo",
-                data={"chat_id": chat_id, "caption": text, "parse_mode": "HTML", "reply_markup": reply_markup},
+                data={
+                    "chat_id": chat_id, 
+                    "caption": text, 
+                    "parse_mode": "HTML", 
+                    "reply_markup": reply_markup
+                },
                 files={"video": ("alert.mp4", video_bytes, "video/mp4")},
                 timeout=60,
             ).raise_for_status()
 
     def send_system_alert(self, description: str, silent: bool = False) -> None:
+        """
+        Send a system alert (e.g., camera offline, LLM error) to chat IDs with
+        alert enabled.
+        """
+        # Chat IDs - not muted, snoozed, or disabled
         with self._chat_ids_lock:
             now = time.monotonic()
             chat_ids = [
                 cid for cid in self._chat_ids
-                if cid not in self._muted and cid not in self._sysalert_disabled and self._snooze_until.get(cid, 0.0) <= now
+                if cid not in self._muted 
+                and cid not in self._sysalert_disabled 
+                and self._snooze_until.get(cid, 0.0) <= now
             ]
+        # Send message to each chat ID
         for chat_id in chat_ids:
-            requests.post(
-                f"{self._url}/sendMessage",
-                # System alerts are always delivered silently (no notification sound).
-                data={
-                    "chat_id": chat_id,
-                    "text": f"{html.escape(description)}\n{_footer_timestamp()}",
-                    "parse_mode": "HTML",
-                    "disable_notification": True,
-                },
-                timeout=60,
-            ).raise_for_status()
+            try:
+                requests.post(
+                    f"{self._url}/sendMessage",
+                    data={
+                        "chat_id": chat_id,
+                        "text": f"{html.escape(description)}\n{footer_timestamp()}",
+                        "parse_mode": "HTML",
+                        "disable_notification": silent,
+                    },
+                    timeout=60,
+                ).raise_for_status()
+            except Exception:
+                logger.exception("Failed to send system alert to chat %s", chat_id)
 
-    def start_polling(self, commands: dict[str, Callable[[int, str], str | tuple[str, list]]]) -> None:
+    def acknowledge_query(self, chat_id: int) -> None:
+        """
+        Acknowledgement to send before a slow LLM query: a "typing..." chat 
+        action so the user knows their question was received and is being worked on.
+        """
+        try:
+            requests.post(
+                f"{self._url}/sendChatAction",
+                json={"chat_id": chat_id, "action": "typing"},
+                timeout=10,
+            )
+        except Exception:
+            logger.exception("Failed to send ack to chat %s", chat_id)
+
+    def start_polling(self, commands: dict[str, CommandHandler]) -> None:
         threading.Thread(target=self._poll_loop, args=(commands,), daemon=True, name="telegram-poll").start()
 
-    def _poll_loop(self, commands: dict[str, Callable[[int, str], str | tuple[str, list]]]) -> None:
-        # Discard any pending updates accumulated while offline
+    def _poll_loop(self, commands: dict[str, CommandHandler]) -> None:
+        """
+        Loop forever to poll new messages/commands and send responses.
+        """
         try:
-            resp = requests.post(f"{self._url}/getUpdates", json={"offset": -1}, timeout=10)
+            resp = requests.post(
+                f"{self._url}/getUpdates", 
+                json={"offset": -1},  # last update in queue
+                timeout=10
+            )
             updates = resp.json().get("result", [])
             offset = updates[-1]["update_id"] + 1 if updates else 0
         except Exception:
@@ -286,80 +312,96 @@ class TelegramClient:
 
         while True:
             try:
-                resp = requests.post(
-                    f"{self._url}/getUpdates",
-                    json={"offset": offset, "timeout": 30, "allowed_updates": ["message", "callback_query"]},
-                    timeout=35,
-                )
-                for update in resp.json().get("result", []):
-                    offset = update["update_id"] + 1
-
-                    if "callback_query" in update:
-                        cq = update["callback_query"]
-                        cq_id = cq["id"]
-                        chat_id = cq.get("message", {}).get("chat", {}).get("id")
-                        data = cq.get("data", "")
-                        with self._chat_ids_lock:
-                            allowed = chat_id in self._chat_ids
-                        toast = ""
-                        if chat_id and allowed and data.startswith("snooze:"):
-                            try:
-                                seconds = float(data.split(":", 1)[1])
-                                self.snooze(chat_id, seconds)
-                                mins = int(seconds // 60)
-                                toast = f"Snoozed for {mins} minute{'s' if mins != 1 else ''}."
-                            except (ValueError, IndexError):
-                                pass
-                        try:
-                            requests.post(
-                                f"{self._url}/answerCallbackQuery",
-                                json={"callback_query_id": cq_id, "text": toast},
-                                timeout=10,
-                            )
-                        except Exception:
-                            logger.exception("Failed to answer callback query")
-                        continue
-
-                    msg = update.get("message", {})
-                    chat_id = msg.get("chat", {}).get("id")
-                    text = msg.get("text", "")
-                    key = (text.split()[0] if text.startswith("/") else None) if text else None
-                    with self._chat_ids_lock:
-                        allowed = chat_id in self._chat_ids
-                    if chat_id and key in commands and allowed:
-                        try:
-                            result = commands[key](chat_id, text)
-                            if isinstance(result, tuple) and isinstance(result[1], dict):
-                                text_body, reply_markup = result
-                                requests.post(
-                                    f"{self._url}/sendMessage",
-                                    json={"chat_id": chat_id, "text": text_body, "reply_markup": reply_markup},
-                                    timeout=10,
-                                )
-                            elif isinstance(result, tuple):
-                                caption, frames = result
-                                requests.post(
-                                    f"{self._url}/sendMessage",
-                                    json={"chat_id": chat_id, "text": caption},
-                                    timeout=10,
-                                ).raise_for_status()
-                                video_bytes = compile_video(frames, self._video_fps)
-                                requests.post(
-                                    f"{self._url}/sendVideo",
-                                    data={"chat_id": chat_id},
-                                    files={"video": ("last.mp4", video_bytes, "video/mp4")},
-                                    timeout=60,
-                                ).raise_for_status()
-                            else:
-                                requests.post(
-                                    f"{self._url}/sendMessage",
-                                    json={"chat_id": chat_id, "text": result},
-                                    timeout=10,
-                                )
-                        except Exception:
-                            logger.exception("Failed to handle %s", key)
+                offset = self._poll(commands, offset)
             except Exception:
                 logger.exception("Poll error")
-                time.sleep(5)
+                time.sleep(2)
 
+    def _poll(self, commands: dict[str, CommandHandler], offset: int) -> int:
+        """
+        Poll Telegram API for user-sent commands, messages, or action and send
+        responses when applicable.
 
+        Args:
+            commands (dict[str, CommandHandler]): Map from command string to
+                handler function.
+            offset (int): Current Telegram offset for commands. Only events
+                more greater than this offset (i.e., more recent) are fetched.
+        
+        Returns:
+            int: Telegram offset of the most recent action.
+        """
+        resp = requests.post(
+            f"{self._url}/getUpdates",
+            json={
+                "offset": offset,
+                "timeout": 30,
+                "allowed_updates": ["message", "callback_query"],
+            },
+            timeout=35,
+        )
+
+        for update in resp.json().get("result", []):
+            offset = update["update_id"] + 1
+            if "callback_query" in update:
+                self._handle_callback_query(update["callback_query"])
+            else:
+                self._handle_command(update.get("message", {}), commands)
+        return offset
+
+    def _is_allowed(self, chat_id: int | None) -> bool:
+        """
+        Whether messages from the given chat should be acted on - if the 
+        chat ID is in the whitelist.
+        """
+        with self._chat_ids_lock:
+            return chat_id in self._chat_ids
+
+    def _handle_callback_query(self, callback_query: dict) -> None:
+        """
+        Handle an inline-button press.
+        """
+        chat_id = callback_query.get("message", {}).get("chat", {}).get("id")
+        data = callback_query.get("data", "")
+        toast = ""
+        if chat_id and self._is_allowed(chat_id):
+            if data.startswith("snooze:"):
+                try:
+                    seconds = float(data.split(":", 1)[1])
+                    self.snooze(chat_id, seconds)
+                    until = time.strftime("%H:%M:%S", time.localtime(time.time() + seconds))
+                    toast = f"Snoozed until {until}."
+                except (ValueError, IndexError):
+                    pass
+
+        try:
+            requests.post(
+                f"{self._url}/answerCallbackQuery",
+                json={"callback_query_id": callback_query["id"], "text": toast},
+                timeout=10,
+            )
+        except Exception:
+            logger.exception("Failed to answer callback query")
+
+    def _handle_command(
+        self, 
+        msg: dict, 
+        commands: dict[str, CommandHandler]
+    ) -> None:
+        """
+        Dispatch a text message to its command handler and send the reply.
+        
+        """
+        chat_id = msg.get("chat", {}).get("id")
+        text = msg.get("text", "")
+        key = text.split()[0] if text.startswith("/") else None
+        if not (chat_id and key in commands and self._is_allowed(chat_id)):
+            return
+        try:
+            text_body, reply_markup = commands[key](chat_id, text)
+            payload = {"chat_id": chat_id, "text": text_body}
+            if reply_markup is not None:
+                payload["reply_markup"] = reply_markup
+            requests.post(f"{self._url}/sendMessage", json=payload, timeout=10)
+        except Exception:
+            logger.exception("Failed to handle %s", key)

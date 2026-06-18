@@ -1,9 +1,24 @@
 """Config schema. See `sample-config.yaml` for info."""
 
+from __future__ import annotations
+
+import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
+
+if TYPE_CHECKING:
+    from detector import Detector
+    from eval_saver import EvalSaver
+    from llm import LLMClient
+    from manager import Manager
+    from memory_query import MemoryQuerier
+    from telegram import TelegramClient
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -18,7 +33,7 @@ class RecorderConfig:
     buffer_seconds: int
     offline_alert_seconds: float
     stale_stream_seconds: float
-    recovery_seconds: float = 5.0
+    recovery_seconds: float = 10.0
 
 
 @dataclass
@@ -76,6 +91,7 @@ class Config:
     no_detection_fallback_seconds: float
     fallback_detection_enabled: bool
     eval_cap: int
+    alert_cap: int = 1000
     healthcheck_url: str | None = None
     yolo_model_path: Path = field(init=False)
 
@@ -84,6 +100,9 @@ class Config:
 
 
 def load_config(path: Path) -> Config:
+    """
+    Load config from YAML file in `path`.
+    """
     with open(path) as f:
         raw = yaml.safe_load(f)
     return Config(
@@ -102,5 +121,82 @@ def load_config(path: Path) -> Config:
         no_detection_fallback_seconds=raw["no_detection_fallback_seconds"],
         fallback_detection_enabled=raw.get("fallback_detection_enabled", True),
         eval_cap=raw.get("eval_cap", 200),
+        alert_cap=raw.get("alert_cap", 1000),
         healthcheck_url=raw.get("healthcheck_url"),
     )
+
+
+def watch_config(
+    path: Path,
+    config: Config,
+    telegram_client: TelegramClient,
+    eval_saver: EvalSaver,
+    llm_client: LLMClient,
+    memory_querier: MemoryQuerier,
+    manager: Manager,
+    detectors: dict[str, Detector],
+) -> None:
+    """
+    Watch config file for changes and update relevant components in-place.
+    """
+    last_mtime = path.stat().st_mtime
+    while True:
+        time.sleep(5.0)
+        try:
+            mtime = path.stat().st_mtime
+            if mtime == last_mtime:
+                continue
+            last_mtime = mtime
+            new_config = load_config(path)
+
+            tg = new_config.telegram
+            telegram_client.update_chat_ids(tg.chat_ids)
+            telegram_client.set_alert_threshold(tg.alert_threshold)
+            telegram_client.set_alert_cooldown(tg.alert_cooldown)
+            telegram_client.set_escalation_threshold(tg.escalation_threshold)
+            eval_saver.set_alert_threshold(tg.alert_threshold)
+            eval_saver.set_eval_cap(new_config.eval_cap)
+            eval_saver.set_alert_cap(new_config.alert_cap)
+            logger.info(
+                "Reloaded telegram: chat_ids=%s alert_threshold=%s alert_cooldown=%s escalation_threshold=%s",
+                tg.chat_ids, tg.alert_threshold, tg.alert_cooldown, tg.escalation_threshold,
+            )
+
+            ep = new_config.llm_endpoint
+            llm_client.set_vision_model(ep.vision_model)
+            llm_client.set_vision_endpoint(ep.vision_url, ep.vision_token)
+            llm_client.set_fast_model(ep.fast_model)
+            llm_client.set_fast_endpoint(ep.fast_url, ep.fast_token)
+            llm_client.set_memory_model(ep.memory_model)
+            llm_client.set_memory_endpoint(ep.memory_url, ep.memory_token)
+            llm_client.set_dog_description(new_config.dog_description)
+            llm_client.set_frame_sampling(ep.frame_sampling)
+            llm_client.set_crop_padding(ep.crop_padding)
+            llm_client.set_max_tokens(ep.max_tokens)
+            logger.info(
+                "Reloaded llm: vision=%s fast=%s memory=%s detection_window=%s crop_padding=%s max_tokens=%s",
+                ep.vision_model, ep.fast_model, ep.memory_model,
+                ep.detection_window, ep.crop_padding, ep.max_tokens,
+            )
+
+            memory_querier.set_dog_name(new_config.dog_name)
+
+            manager.set_fallback_detection_enabled(new_config.fallback_detection_enabled)
+            manager.set_cooldown(ep.cooldown)
+            manager.set_min_interval(ep.min_interval)
+            manager.set_detection_window(ep.detection_window)
+            manager.set_slow_threshold(ep.slow_threshold)
+            manager.set_no_detection_interval(new_config.no_detection_fallback_seconds)
+            logger.info(
+                "Reloaded manager: fallback=%s cooldown=%s min_interval=%s detection_window=%s slow_threshold=%s no_detection_interval=%s",
+                new_config.fallback_detection_enabled, ep.cooldown, ep.min_interval,
+                ep.detection_window, ep.slow_threshold, new_config.no_detection_fallback_seconds,
+            )
+
+            for det in detectors.values():
+                det.set_detect_interval(new_config.detect_interval)
+            logger.info("Reloaded detect_interval=%s", new_config.detect_interval)
+
+            config.camera_stale_threshold = new_config.camera_stale_threshold
+        except Exception:
+            logger.exception("Failed to reload config")

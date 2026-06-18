@@ -1,6 +1,9 @@
 services:
   app:
     build: .
+    # Run an init (tini) as PID 1 so SIGTERM is forwarded to python and reaped;
+    # otherwise python-as-PID-1 ignores SIGTERM and `docker compose down` hangs.
+    init: true
     volumes:
       - ./src:/app/src
       - ./config.yaml:/app/config.yaml:ro

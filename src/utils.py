@@ -1,21 +1,49 @@
 import base64
+import json
 import logging
 import os
 import subprocess
 import tempfile
+import time
+import urllib.request
 from datetime import datetime
+from pathlib import Path
 
 import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
+_LEVEL_COLORS = {
+    logging.DEBUG:    "\033[90m",   # gray
+    logging.INFO:     "\033[97m",   # white
+    logging.WARNING:  "\033[33m",   # yellow
+    logging.ERROR:    "\033[31m",   # red
+    logging.CRITICAL: "\033[35m",   # magenta
+}
+_RESET = "\033[0m"
+
+
+class ColorFormatter(logging.Formatter):
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        # strftime has no sub-second support, so append tenths of a second.
+        return f"{super().formatTime(record, datefmt)}.{int(record.msecs // 100)}"
+
+    def format(self, record: logging.LogRecord) -> str:
+        color = _LEVEL_COLORS.get(record.levelno, "")
+        record.levelname = f"{color}{record.levelname:<8}{_RESET}"
+        return super().format(record)
+
 _LLM_MAX_WIDTH = 640
 _LLM_MAX_HEIGHT = 360
 _JPEG_QUALITY = 85
+VIDEO_SIZE = (960, 540)
 
 
 def encode_frame(frame: np.ndarray) -> str:
+    """
+    Encode a single frame to base64.
+    """
     h, w = frame.shape[:2]
     if w > _LLM_MAX_WIDTH or h > _LLM_MAX_HEIGHT:
         scale = min(_LLM_MAX_WIDTH / w, _LLM_MAX_HEIGHT / h)
@@ -23,11 +51,10 @@ def encode_frame(frame: np.ndarray) -> str:
     _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, _JPEG_QUALITY])
     return base64.b64encode(buf).decode()
 
-
-VIDEO_SIZE = (960, 540)
-
-
 def compile_video(frames: list[np.ndarray], fps: float) -> bytes:
+    """
+    Compile multiple frames into a single video.
+    """
     if not frames:
         raise ValueError("No frames to compile into video")
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -53,6 +80,51 @@ def compile_video(frames: list[np.ndarray], fps: float) -> bytes:
         with open(out, "rb") as f:
             return f.read()
 
+def save_clip(base: Path, messages: list[dict], frames: list[np.ndarray], video_fps: float) -> None:
+    """
+    Write a clip's user-prompt JSON and compiled video to `{base}.json`
+    and `{base}.mp4`.
+    """
+    user_content = next(
+        (m["content"] for m in messages if m["role"] == "user"),
+        []
+    )
+
+    # Save JSON file
+    try:
+        p = base.with_suffix(".json")
+        p.write_text(json.dumps(user_content, indent=2))
+        p.chmod(0o666)
+    except OSError:
+        logger.exception("Failed to save clip JSON to %s", base)
+
+    # Save video file
+    try:
+        video_bytes = compile_video(frames, video_fps)
+        p = base.with_suffix(".mp4")
+        p.write_bytes(video_bytes)
+        p.chmod(0o666)
+    except Exception:
+        logger.exception("Failed to save clip video to %s", base)
+
+def healthcheck_ping(url: str) -> None:
+    """
+    Heartbeat to Healthcheck or similar, sent every minute.
+    """
+    while True:
+        try:
+            urllib.request.urlopen(url, timeout=10)
+        except Exception:
+            logger.exception("Healthcheck ping failed")
+        time.sleep(60)
+
+def footer_timestamp() -> str:
+    """Local-time timestamp with one decimal second, for message footers.
+
+    Returns HTML-formatted (italic) text; senders must use parse_mode="HTML".
+    """
+    now = time.time()
+    return f"<i>({time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}.{int(now % 1 * 10)})</i>"
 
 def format_age(ts: datetime) -> str:
     age = (datetime.now().astimezone() - ts).total_seconds()

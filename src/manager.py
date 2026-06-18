@@ -204,14 +204,15 @@ class Manager(threading.Thread):
                     self._last_llm_inference_latency,
                     list(frames_by_camera.keys()), detected_by, double_pass
                 )
+            if self._eval_saver is not None:
+                self._eval_saver.save_alert(score, messages, frames)
+                self._eval_saver.save_negative(score, messages, frames)
             if self._llm_logger is not None:
                 self._llm_logger.log(result_time, score, summary, description, self._last_llm_inference_latency, list(frames_by_camera.keys()), detected_by)
-            if self._eval_saver is not None:
-                self._eval_saver.save_negative(score, messages, frames)
 
             # Handle sending alert(s)
             self._handle_llm_recovered()
-            self._telegram_client.send_alert(score, summary, description, frames, messages)
+            self._telegram_client.send_alert(score, summary, description, frames)
         except Exception as e:
             logger.exception("LLM error")
             time.sleep(2)  # backoff before the next inference attempt

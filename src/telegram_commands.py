@@ -2,12 +2,12 @@
 Handlers for Telegram commands.
 """
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from config import Config
 from detector import YoloLagMonitor
-from llm_logger import LLMOutputLogger
 from manager import Manager
+from memory_query import MemoryQuerier
 from recorder import Recorder
 from telegram import TelegramClient
 
@@ -15,7 +15,7 @@ CommandMap = dict[
     str | None,
     Callable[
         [int, str],
-        str | tuple[str, list] | tuple[str, dict]
+        tuple[str, dict | None]
     ]
 ]
 
@@ -25,7 +25,7 @@ def build_commands(
     manager: Manager,
     recorders: dict[str, Recorder],
     config: Config,
-    llm_logger: LLMOutputLogger,
+    memory_querier: MemoryQuerier,
     lag_monitor: YoloLagMonitor,
 ) -> CommandMap:
     """
@@ -36,7 +36,7 @@ def build_commands(
     live_stream_url = config.telegram.live_stream_url
     logs_url = config.telegram.logs_url
 
-    def status_fn(_chat_id: int, _text: str) -> tuple[str, dict]:
+    def status_fn(_chat_id: int, _text: str) -> tuple[str, dict | None]:
         """
         Handler for `/status` command.
         - `/status`: shows the status of all cameras and the most recent LLM
@@ -81,7 +81,7 @@ def build_commands(
         ]]}
         return "\n".join(lines), reply_markup
 
-    def score_fn(chat_id: int, text: str) -> str:
+    def score_fn(chat_id: int, text: str) -> tuple[str, dict | None]:
         """
         Handler for `/score [0-10]` command.
         - `/score`: shows current alert threshold
@@ -92,20 +92,20 @@ def build_commands(
             return (
                 f"Your alert threshold is {telegram_client.get_threshold(chat_id)}."
                 " Run /score [0-10] to change it."
-            )
+            ), None
         elif len(parts) > 2:
-            return "Usage: /score [0-10]"
+            return "Usage: /score [0-10]", None
 
         try:
             threshold = int(parts[1])
         except ValueError:
-            return "Usage: /score [0-10]"
+            return "Usage: /score [0-10]", None
         if not (0 <= threshold <= 10):
-            return "Threshold must be between 0 and 10."
+            return "Threshold must be between 0 and 10.", None
         telegram_client.set_threshold(chat_id, threshold)
-        return f"Your alert threshold is now {threshold}."
+        return f"Your alert threshold is now {threshold}.", None
 
-    def sysalert_fn(chat_id: int, text: str) -> str:
+    def sysalert_fn(chat_id: int, text: str) -> tuple[str, dict | None]:
         """
         Handler for `/sysalert [on|off]` command.
         - `/sysalert`: shows whether system alerts are on or off
@@ -118,17 +118,17 @@ def build_commands(
         parts = text.split()
         if len(parts) == 1:
             enabled = telegram_client.get_sysalert(chat_id)
-            return f"System alerts are {'on' if enabled else 'off'} for you. Run /sysalert {'off' if enabled else 'on'} to change."
+            return f"System alerts are {'on' if enabled else 'off'} for you. Run /sysalert {'off' if enabled else 'on'} to change.", None
         if len(parts) != 2 or parts[1] not in ("on", "off"):
-            return "Usage: /sysalert [on|off]"
+            return "Usage: /sysalert [on|off]", None
         enabled = parts[1] == "on"
         telegram_client.set_sysalert(chat_id, enabled)
-        return f"System alerts turned {parts[1]}."
+        return f"System alerts turned {parts[1]}.", None
 
-    def snooze_fn(chat_id: int, text: str) -> str:
+    def snooze_fn(chat_id: int, text: str) -> tuple[str, dict | None]:
         """
         Handler for `/snooze [#h|#m|reset]` command.
-        - `/snooze`: shows remaining snooze time
+        - `/snooze`: shows snooze expiration time
         - `/snooze #h`: snoozes alerts for the specified number of hours
         - `/snooze #m`: snoozes alerts for the specified number of minutes
         - `/snooze reset`: cancels the active snooze immediately
@@ -137,19 +137,18 @@ def build_commands(
         parts = text.split()
         if len(parts) == 1:
             if remaining > 0:
-                mins = int(remaining // 60)
-                secs = int(remaining % 60)
-                return f"Alerts snoozed for the next {mins} minutes {secs} seconds. Run /snooze reset to cancel."
-            return "Alerts are not snoozed. Run /snooze #h (hours) or /snooze #m (minutes) to snooze."
+                until = (datetime.now() + timedelta(seconds=remaining)).strftime("%H:%M:%S")
+                return f"Alerts snoozed until {until}. Run /snooze reset to cancel.", None
+            return "Alerts are not snoozed. Run /snooze #h (hours) or /snooze #m (minutes) to snooze.", None
         if len(parts) != 2:
-            return "Usage: /snooze [{hrs}h|{mins}m|reset] (example: `/snooze 2h`, `/snooze 30m`)"
+            return "Usage: /snooze [{hrs}h|{mins}m|reset] (example: `/snooze 2h`, `/snooze 30m`)", None
 
         arg = parts[1]
         if arg == "reset":
             if remaining == 0:
-                return "Alerts are not snoozed."
+                return "Alerts are not snoozed.", None
             telegram_client.snooze_reset(chat_id)
-            return "Snooze cancelled."
+            return "Snooze cancelled.", None
 
         try:
             if arg.endswith("h"):
@@ -157,75 +156,78 @@ def build_commands(
             elif arg.endswith("m"):
                 seconds = float(arg[:-1]) * 60
             else:
-                return "Usage: /snooze [{hrs}h|{mins}m|reset]"
+                return "Usage: /snooze [{hrs}h|{mins}m|reset]", None
         except ValueError:
-            return "Usage: /snooze [{hrs}h|{mins}m|reset]"
+            return "Usage: /snooze [{hrs}h|{mins}m|reset]", None
 
         telegram_client.snooze(chat_id, seconds)
-        return f"Alerts snoozed for {arg}."
+        until = (datetime.now() + timedelta(seconds=seconds)).strftime("%H:%M:%S")
+        return f"Alerts snoozed until {until}.", None
 
-    def mute_fn(chat_id: int, _text: str) -> str:
+    def mute_fn(chat_id: int, _text: str) -> tuple[str, dict | None]:
         """
         Handler for `/mute` command.
         - `/mute`: permanently mutes alerts until /unmute is run
         """
         if telegram_client.is_muted(chat_id):
-            return "Alerts are already muted. Run /unmute to resume."
+            return "Alerts are already muted. Run /unmute to resume.", None
         telegram_client.mute(chat_id)
-        return "Alerts muted. Run /unmute to resume."
+        return "Alerts muted. Run /unmute to resume.", None
 
-    def unmute_fn(chat_id: int, _text: str) -> str:
+    def unmute_fn(chat_id: int, _text: str) -> tuple[str, dict | None]:
         """
         Handler for `/unmute` command.
         - `/unmute`: resumes alerts after /mute
         """
         if not telegram_client.is_muted(chat_id):
-            return "Alerts are not muted."
+            return "Alerts are not muted.", None
         telegram_client.unmute(chat_id)
-        return "Alerts unmuted."
+        return "Alerts unmuted.", None
 
-    def llm_fn(_chat_id: int, text: str) -> str:
+    def llm_fn(_chat_id: int, text: str) -> tuple[str, dict | None]:
         """
         Handler for `/llm [on|off]` command.
         - `/llm`: shows whether LLM inference is enabled
-        - `/llm on`: enables LLM inference
-        - `/llm off`: disables LLM inference
+        - `/llm on`: enables LLM inference globally
+        - `/llm off`: disables LLM inference globally
         """
         parts = text.split()
         if len(parts) == 1:
             state = "on" if manager.llm_enabled else "off"
             inverse_state = "off" if manager.llm_enabled else "on"
-            return (f"LLM inference is {state}. Run /llm {inverse_state} to change.")
+            return f"LLM inference is {state}. Run /llm {inverse_state} to change.", None
         if len(parts) != 2 or parts[1] not in ("on", "off"):
-            return "Usage: /llm [on|off]"
+            return "Usage: /llm [on|off]", None
         enabled = parts[1] == "on"
         manager.set_llm_enabled(enabled)
-        return f"LLM inference turned {parts[1]}."
+        return f"LLM inference turned {parts[1]}.", None
 
-    def ask_fn(chat_id: int, text: str) -> str:
+    def ask_fn(chat_id: int, text: str) -> tuple[str, dict | None]:
         """
         Handler for `/ask <question>` command.
         - `/ask <question>`: asks a question to the LLM
         """
         parts = text.split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
-            return "Usage: /ask <question>"
+            return "Usage: /ask <question>", None
+        telegram_client.acknowledge_query(chat_id)
         try:
-            return llm_logger.query(parts[1].strip(), chat_id=chat_id)
+            return memory_querier.query(parts[1].strip(), chat_id=chat_id), None
         except Exception as e:
-            return f"❌ Error: {e}"
+            return f"❌ Error: {e}", None
 
-    def catchall_fn(chat_id: int, text: str) -> str:
+    def catchall_fn(chat_id: int, text: str) -> tuple[str, dict | None]:
         """
-        Handler for general text not starting with a recognized command. 
-        Forwards the text to the LLM logger as a query.
+        Handler for general text not starting with a recognized command.
+        Forwards the text to the memory querier.
         """
         if not text.strip():
-            return "Usage: /ask <question>"
+            return "Usage: /ask <question>", None
+        telegram_client.acknowledge_query(chat_id)
         try:
-            return llm_logger.query(text.strip(), chat_id=chat_id)
+            return memory_querier.query(text.strip(), chat_id=chat_id), None
         except Exception as e:
-            return f"❌ Error: {e}"
+            return f"❌ Error: {e}", None
 
     return {
         "/status": status_fn,

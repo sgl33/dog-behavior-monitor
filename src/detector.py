@@ -62,7 +62,7 @@ class YoloLagMonitor:
             elif elapsed > self._detect_interval:
                 if self._behind_since is None:
                     self._behind_since = now_mono
-                # Only alert once it's been falling behind for the grace period.
+                # Only alert once it's been falling behind for the grace period
                 if not self._alerted_behind and now_mono - self._behind_since > self._BEHIND_GRACE_SECONDS:
                     self._alerted_behind = True
                     msg = f"⚠️ [{camera}] YOLO inference falling behind: {elapsed:.2f}s "
@@ -134,7 +134,10 @@ class Detector(threading.Thread):
                 inference_end = time.monotonic()
 
                 # YOLO inference lag alerts (shared across all detectors)
-                self._lag_monitor.record(self.camera, inference_end - inference_start)
+                self._lag_monitor.record(
+                    camera=self.camera,
+                    elapsed=(inference_end - inference_start)
+                )
 
             elapsed = time.monotonic() - start
             self._stop_event.wait(max(0.0, self._detect_interval - elapsed))

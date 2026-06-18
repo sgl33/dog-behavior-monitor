@@ -14,7 +14,7 @@ templates = Jinja2Templates(directory="templates")
 
 _history: deque = deque(maxlen=100)
 _clients: set[WebSocket] = set()
-_camera_status: dict[str, bool] = {}
+_camera_status: dict[str, dict] = {}
 
 
 class PushPayload(BaseModel):
@@ -28,8 +28,13 @@ class PushPayload(BaseModel):
     detected_by: str | None = None
 
 
+class CameraInfo(BaseModel):
+    state: str  # "ok" | "warn" | "err"
+    age: float | None = None  # seconds since last frame, None if no frames yet
+
+
 class CameraStatusPayload(BaseModel):
-    status: dict[str, bool]
+    status: dict[str, CameraInfo]
 
 
 @app.get("/")
@@ -48,7 +53,7 @@ async def push(payload: PushPayload):
 @app.post("/push_cameras")
 async def push_cameras(payload: CameraStatusPayload):
     global _camera_status
-    _camera_status = payload.status
+    _camera_status = {name: info.model_dump() for name, info in payload.status.items()}
     await _broadcast({"type": "cameras", "status": _camera_status})
     return JSONResponse({"ok": True})
 

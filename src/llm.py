@@ -1,6 +1,7 @@
 import json
 import re
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -56,16 +57,42 @@ class LLMClient:
         self._vision_url, self._vision_headers = self._endpoint(config.vision_url, config.vision_token)
         self._fast_url, self._fast_headers = self._endpoint(config.fast_url, config.fast_token)
         self._memory_url, self._memory_headers = self._endpoint(config.memory_url, config.memory_token)
+        # Pool used purely to enforce a hard wall-clock cap on each request: the
+        # requests `timeout` is per-socket-read, so a server that accepts the
+        # connection then trickles (or never finishes) bytes can hang far longer
+        # than `timeout`. We submit the request here and bound it with
+        # future.result(deadline) so the caller always recovers.
+        self._post_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="llm-post")
 
     @staticmethod
     def _endpoint(url: str, token: str | None) -> tuple[str, dict]:
         return (
             f"{url.rstrip('/')}/chat/completions", 
-            ({"Authorization": f"Bearer {token}"} if token else {})
+            {"Authorization": f"Bearer {token}"} if token else {}
         )
 
     def _post(self, url: str, headers: dict, payload: dict, timeout: int = 30) -> str:
-        response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        # `timeout` is the per-socket connect/read timeout passed to requests;
+        # `deadline` is an absolute wall-clock cap that catches a server which
+        # trickles bytes slower than the read timeout but never stalls long
+        # enough to trip it. Give the pool worker a little headroom over the
+        # socket timeout so requests' own timeout fires first when it can.
+        deadline = timeout + 15
+        future = self._post_pool.submit(self._do_post, url, headers, payload, timeout)
+        try:
+            return future.result(timeout=deadline)
+        except FuturesTimeout:
+            future.cancel()
+            raise TimeoutError(f"LLM request to {url} exceeded {deadline}s wall-clock deadline")
+
+    @staticmethod
+    def _do_post(url: str, headers: dict, payload: dict, timeout: int) -> str:
+        response = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=(10, timeout),
+        )
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"] or ""
 
@@ -132,6 +159,9 @@ class LLMClient:
         endpoint: str = "fast",
         messages: list[dict] | None = None,
     ) -> str:
+        """
+        Summarize a minute's 
+        """
         content = self._post(
             self._fast_url,
             self._fast_headers,
@@ -228,6 +258,11 @@ class LLMClient:
 ############  Helper functions below  ############
 
 def extract_json(text: str) -> str:
+    """
+    Extract JSON (as string) from LLM response content, which may contain 
+    reasoning or other text (although it shouldn't if LLM follows the
+    instructions correctly).
+    """
     # Strip reasoning blocks emitted by thinking models (e.g. Gemma, QwQ)
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
@@ -292,22 +327,40 @@ def _crop(
     y2 = min(h, y2 + pad_y)
     return frame[y1:y2, x1:x2]
 
-
 def _sample(
-    frames: list[tuple[datetime, np.ndarray]], n: int
+    frames: list[tuple[datetime, np.ndarray]], 
+    num_frames: int
 ) -> list[tuple[datetime, np.ndarray]]:
-    if not frames or n <= 0 or len(frames) <= n:
+    """
+    Sample `num_frames` evenly spaced frames from the list, including the first
+    and last.
+    """
+    if not frames or num_frames <= 0 or len(frames) <= num_frames:
         return frames
-    if n == 1:
+    if num_frames == 1:
         return [frames[-1]]
-    indices = [round(i * (len(frames) - 1) / (n - 1)) for i in range(n)]
+    indices = [round(i * (len(frames) - 1) / (num_frames - 1)) for i in range(num_frames)]
     return [frames[i] for i in indices]
-
 
 def _sample_tiered(
     frames: list[tuple[datetime, np.ndarray, str]],
     tiers: list[tuple[float, float]],
 ) -> list[tuple[datetime, np.ndarray, str]]:
+    """
+    Sample frames from the list according to the specified tiers.
+
+    Args:
+        frames (list[tuple[datetime, np.ndarray, str]]): List of (timestamp, 
+            frame, base64 encoding) tuples sorted by timestamp ascending
+        tiers (list[tuple[float, float]]): List of (seconds, fps) tuples 
+            specifying the sampling tiers in order from latest to oldest. 
+            For example, [(3, 5), (7, 1)] samples 3 most recent seconds at 
+            5 fps, then the 7 seconds before that at 1 fps. Total seconds
+            must be greater than the age of the oldest frame.
+    Returns:
+        list[tuple[datetime, np.ndarray, str]]: List of (timestamp, frame, 
+            base64 encoding) tuples for the sampled frames.
+    """
     if not frames:
         return []
     latest_ts = frames[-1][0]

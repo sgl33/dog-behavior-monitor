@@ -3,8 +3,13 @@ from threading import RLock
 
 
 class DogDetectionState:
+    """
+    State tracker for YOLO dog detection.
+    """
+
     def __init__(self, cameras: list[str]):
         self._detected: dict[str, datetime | None] = {c: None for c in cameras}
+        # camera ID, last detected timestamp
         self._lock = RLock()
 
     def update(self, camera: str) -> None:
@@ -16,6 +21,9 @@ class DogDetectionState:
             return self._detected[camera]
 
     def any_recent(self, within_seconds: float) -> bool:
+        """
+        Return true if any cameras detected a dog within the specified time.
+        """
         now = datetime.now()
         with self._lock:
             return any(
@@ -24,9 +32,13 @@ class DogDetectionState:
             )
 
     def recent_cameras(self, within_seconds: float) -> list[str]:
+        """
+        Get the list of cameras that recently detected a dog.
+        """
         now = datetime.now()
         with self._lock:
             return [
                 c for c, ts in self._detected.items()
-                if ts is not None and (now - ts).total_seconds() <= within_seconds
+                if ts is not None 
+                and (now - ts).total_seconds() <= within_seconds
             ]

@@ -45,13 +45,15 @@ h1 { font-size: 15px; font-weight: 600; }
 .empty { text-align: center; color: #484f58; padding: 48px 16px; font-size: 14px; }
 #cameras {
   background: #161b22; border-bottom: 1px solid #30363d;
-  padding: 5px 16px; display: none; flex-wrap: wrap; gap: 12px;
+  padding: 5px 16px; display: none; flex-wrap: wrap; row-gap: 4px; column-gap: 12px;
 }
 #cameras.visible { display: flex; }
 .cam { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #8b949e; }
 .cam-dot { width: 6px; height: 6px; border-radius: 50%; background: #484f58; flex-shrink: 0; }
-.cam-dot.ok  { background: #3fb950; }
-.cam-dot.err { background: #f85149; }
+.cam-dot.ok   { background: #3fb950; }
+.cam-dot.warn { background: #d29922; }
+.cam-dot.err  { background: #f85149; }
+.cam-age { color: #6e7681; }
 .card.has-thumb { cursor: pointer; }
 .card.has-thumb:hover { border-color: #8b949e; }
 #modal {
@@ -137,7 +139,13 @@ function updateCameras(status) {
   const div = document.getElementById('cameras');
   div.className = 'visible';
   div.innerHTML = Object.entries(status)
-    .map(([name, ok]) => `<span class="cam"><span class="cam-dot ${ok ? 'ok' : 'err'}"></span>${fmtCamera(name)}</span>`)
+    .map(([name, info]) => {
+      const state = info && info.state ? info.state : 'err';
+      const age = info && info.age != null
+        ? ` <span class="cam-age">(${Math.round(info.age)}s)</span>`
+        : '';
+      return `<span class="cam"><span class="cam-dot ${state}"></span>${fmtCamera(name)}${age}</span>`;
+    })
     .join('');
 }
 

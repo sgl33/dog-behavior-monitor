@@ -36,7 +36,7 @@ recorder:
 
 # --- YOLO Object Detection ---
 
-yolo_source_model: src/yolo26n.pt
+yolo_source_model: models/yolo26n.pt
 # Path to the YOLO model weights. Built-in options are `src/yolo26n.pt` and 
 # `src/yolo26s.pt`, but you can use other models too.
 # Exported to OpenVINO INT8 on first run if running on Intel iGPU.

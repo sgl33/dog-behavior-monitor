@@ -197,10 +197,16 @@ class Manager(threading.Thread):
             self._last_llm_finish_wall_time = result_time
             self._llm_busy.clear()
 
-            # Push result to web server, logger, and eval clip saver
+            # Push result to web server, logger, and eval clip saver.
+            # Send only the most recent frame from each camera for display.
             if self._web_server is not None:
+                web_frames = [
+                    cam_frames[-1][1]
+                    for cam_frames in frames_by_camera.values()
+                    if cam_frames
+                ]
                 self._web_server.push_result(
-                    score, summary, description, result_time, frames,
+                    score, summary, description, result_time, web_frames,
                     self._last_llm_inference_latency,
                     list(frames_by_camera.keys()), detected_by, double_pass
                 )

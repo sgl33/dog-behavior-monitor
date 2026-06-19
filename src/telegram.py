@@ -369,7 +369,10 @@ class TelegramClient:
                 try:
                     seconds = float(data.split(":", 1)[1])
                     self.snooze(chat_id, seconds)
-                    until = time.strftime("%H:%M:%S", time.localtime(time.time() + seconds))
+                    until = time.strftime(
+                        "%H:%M:%S",
+                        time.localtime(time.time() + seconds)
+                    )
                     toast = f"Snoozed until {until}."
                 except (ValueError, IndexError):
                     pass
@@ -390,7 +393,6 @@ class TelegramClient:
     ) -> None:
         """
         Dispatch a text message to its command handler and send the reply.
-        
         """
         chat_id = msg.get("chat", {}).get("id")
         text = msg.get("text", "")

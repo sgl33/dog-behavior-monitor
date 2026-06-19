@@ -42,18 +42,27 @@ VIDEO_SIZE = (960, 540)
 
 def encode_frame(frame: np.ndarray) -> str:
     """
-    Encode a single frame to base64.
+    Encode a single frame to base64 in JPG. If the frame is larger than 
+    `_LLM_MAX_WIDTH` or `_LLM_MAX_HEIGHT`, it will be resized.
     """
     h, w = frame.shape[:2]
     if w > _LLM_MAX_WIDTH or h > _LLM_MAX_HEIGHT:
         scale = min(_LLM_MAX_WIDTH / w, _LLM_MAX_HEIGHT / h)
-        frame = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, _JPEG_QUALITY])
+        frame = cv2.resize(
+            frame, 
+            (int(w * scale), int(h * scale)),
+            interpolation=cv2.INTER_AREA
+        )
+    _, buf = cv2.imencode(
+        ".jpg", frame, 
+        [cv2.IMWRITE_JPEG_QUALITY, _JPEG_QUALITY]
+    )
     return base64.b64encode(buf).decode()
 
 def compile_video(frames: list[np.ndarray], fps: float) -> bytes:
     """
-    Compile multiple frames into a single video.
+    Compile multiple `frames` into a single MP4 video. Frames will be resized 
+    to `VIDEO_SIZE`.
     """
     if not frames:
         raise ValueError("No frames to compile into video")
@@ -80,7 +89,12 @@ def compile_video(frames: list[np.ndarray], fps: float) -> bytes:
         with open(out, "rb") as f:
             return f.read()
 
-def save_clip(base: Path, messages: list[dict], frames: list[np.ndarray], video_fps: float) -> None:
+def save_clip_and_data(
+    base: Path,
+    messages: list[dict],
+    frames: list[np.ndarray],
+    video_fps: float
+) -> None:
     """
     Write a clip's user-prompt JSON and compiled video to `{base}.json`
     and `{base}.mp4`.
@@ -124,9 +138,15 @@ def footer_timestamp() -> str:
     Returns HTML-formatted (italic) text; senders must use parse_mode="HTML".
     """
     now = time.time()
-    return f"<i>({time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}.{int(now % 1 * 10)})</i>"
+    ts = f"<i>({time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}."
+    ts += f"{int(now % 1 * 10)})</i>"
+    return ts
 
 def format_age(ts: datetime) -> str:
+    """
+    Format the age of a timestamp (e.g. last frame time) as a human-readable 
+    string, either in seconds, minutes, or hours.
+    """
     age = (datetime.now().astimezone() - ts).total_seconds()
     if age < 60:
         return f"{age:.0f}s ago"

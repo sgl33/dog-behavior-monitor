@@ -114,15 +114,15 @@ class LLMClient:
 
     def analyze(
         self,
-        frames_by_camera: dict[str, list[tuple[datetime, np.ndarray, str]]],
+        frames_by_camera: dict[str, list[tuple[datetime, np.ndarray]]],
         boxes_by_camera: dict[str, list[tuple[int, int, int, int]]],
     ) -> tuple[str, list[np.ndarray], list[dict]]:
         """
         Crop and run LLM analysis on video frames.
 
         Args:
-            frames_by_camera: dict mapping camera name to list of 
-                (timestamp, frame, encoded frame) tuples
+            frames_by_camera: dict mapping camera name to list of
+                (timestamp, frame) tuples
             boxes_by_camera: dict mapping camera name to list of bounding boxes 
                 (x1, y1, x2, y2)
 
@@ -275,7 +275,7 @@ def extract_json(text: str) -> str:
 
 
 def _build_frame_content(
-    frames_by_camera: dict[str, list[tuple[datetime, np.ndarray, str]]],
+    frames_by_camera: dict[str, list[tuple[datetime, np.ndarray]]],
     boxes_by_camera: dict[str, list[tuple[int, int, int, int]]],
     frame_sampling: list[tuple[float, float]],
     crop_padding: float,
@@ -291,13 +291,9 @@ def _build_frame_content(
 
     for camera, frames in frames_by_camera.items():
         boxes = boxes_by_camera.get(camera, [])
-        for ts, frame, encoded in _sample_tiered(frames, frame_sampling):
-            if boxes:
-                display = _crop(frame, boxes, crop_padding)
-                img_b64 = encode_frame(display)
-            else:
-                display = frame
-                img_b64 = encoded
+        for ts, frame in _sample_tiered(frames, frame_sampling):
+            display = _crop(frame, boxes, crop_padding) if boxes else frame
+            img_b64 = encode_frame(display)
             sampled_frames.append(display)
             content.append({"type": "text", "text": f"{camera} @ {ts.strftime('%H:%M:%S.%f')[:-3]}"})
             content.append({
@@ -343,28 +339,28 @@ def _sample(
     return [frames[i] for i in indices]
 
 def _sample_tiered(
-    frames: list[tuple[datetime, np.ndarray, str]],
+    frames: list[tuple[datetime, np.ndarray]],
     tiers: list[tuple[float, float]],
-) -> list[tuple[datetime, np.ndarray, str]]:
+) -> list[tuple[datetime, np.ndarray]]:
     """
     Sample frames from the list according to the specified tiers.
 
     Args:
-        frames (list[tuple[datetime, np.ndarray, str]]): List of (timestamp, 
-            frame, base64 encoding) tuples sorted by timestamp ascending
+        frames (list[tuple[datetime, np.ndarray]]): List of (timestamp,
+            frame) tuples sorted by timestamp ascending
         tiers (list[tuple[float, float]]): List of (seconds, fps) tuples 
             specifying the sampling tiers in order from latest to oldest. 
             For example, [(3, 5), (7, 1)] samples 3 most recent seconds at 
             5 fps, then the 7 seconds before that at 1 fps. Total seconds
             must be greater than the age of the oldest frame.
     Returns:
-        list[tuple[datetime, np.ndarray, str]]: List of (timestamp, frame, 
-            base64 encoding) tuples for the sampled frames.
+        list[tuple[datetime, np.ndarray]]: List of (timestamp, frame) tuples
+            for the sampled frames.
     """
     if not frames:
         return []
     latest_ts = frames[-1][0]
-    result: list[tuple[datetime, np.ndarray, str]] = []
+    result: list[tuple[datetime, np.ndarray]] = []
     boundary = latest_ts
     for seconds, fps in tiers:
         start = boundary - timedelta(seconds=seconds)

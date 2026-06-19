@@ -15,9 +15,20 @@ header {
   display: flex; align-items: center; gap: 12px;
 }
 h1 { font-size: 15px; font-weight: 600; }
+#refresh {
+  margin-left: auto; flex-shrink: 0;
+  background: #21262d; color: #8b949e;
+  border: 1px solid #30363d; border-radius: 6px;
+  width: 28px; height: 28px; padding: 0;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s, color 0.15s, transform 0.3s;
+}
+#refresh:hover { background: #30363d; color: #c9d1d9; }
+#refresh:active { transform: rotate(180deg); }
+#refresh svg { display: block; }
 #dot {
   width: 8px; height: 8px; border-radius: 50%;
-  background: #484f58; margin-left: auto; flex-shrink: 0;
+  background: #484f58; flex-shrink: 0;
   transition: background 0.3s, box-shadow 0.3s;
 }
 #dot.live { background: #3fb950; box-shadow: 0 0 6px #3fb950; }
@@ -26,7 +37,16 @@ h1 { font-size: 15px; font-weight: 600; }
   background: #161b22; border: 1px solid #30363d; border-radius: 8px;
   padding: 10px 12px; display: flex; gap: 10px; align-items: flex-start;
 }
-.thumb { width: 96px; height: 54px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+.thumb-wrap { position: relative; flex-shrink: 0; cursor: pointer; }
+.thumb-wrap:hover .thumb { opacity: 0.8; }
+.thumb-more {
+  position: absolute; right: 3px; bottom: 3px;
+  background: rgba(0,0,0,0.7); color: #fff;
+  font-size: 11px; font-weight: 600;
+  padding: 1px 6px; border-radius: 9px;
+  pointer-events: none;
+}
+.thumb { width: 96px; height: 54px; object-fit: cover; border-radius: 4px; display: block; transition: opacity 0.15s; }
 .no-thumb { width: 96px; height: 54px; border-radius: 4px; flex-shrink: 0; background: #21262d; }
 .body { flex: 1; min-width: 0; }
 .meta { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
@@ -54,38 +74,68 @@ h1 { font-size: 15px; font-weight: 600; }
 .cam-dot.warn { background: #d29922; }
 .cam-dot.err  { background: #f85149; }
 .cam-age { color: #6e7681; }
-.card.has-thumb { cursor: pointer; }
-.card.has-thumb:hover { border-color: #8b949e; }
 #modal {
   display: none; position: fixed; inset: 0; z-index: 100;
   background: rgba(0,0,0,0.85); align-items: center; justify-content: center;
+  padding: 16px;
 }
 #modal.open { display: flex; }
-#modal img { max-width: 92vw; max-height: 92vh; border-radius: 6px; object-fit: contain; }
+#modal-content {
+  display: flex; flex-wrap: wrap; gap: 10px;
+  overflow-x: hidden; overflow-y: auto;
+  max-width: 96vw; max-height: 96vh; align-items: center; justify-content: center;
+}
+#modal-content img { max-width: 92vw; max-height: 88vh; border-radius: 6px; object-fit: contain; }
 </style>
 </head>
 <body>
 <header>
   <span>🐕</span>
   <h1>Dog Behavior Monitor</h1>
+  <button id="refresh" title="Refresh" aria-label="Refresh">
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
+         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+      <path d="M21 3v6h-6"/>
+    </svg>
+  </button>
   <span id="dot"></span>
 </header>
 <div id="cameras"></div>
 <div id="feed"><p class="empty">No results yet</p></div>
-<div id="modal"><img id="modal-img" src="" alt=""></div>
+<div id="modal"><div id="modal-content"></div></div>
 <script>
 const feed = document.getElementById('feed');
 const dot  = document.getElementById('dot');
 const modal = document.getElementById('modal');
-const modalImg = document.getElementById('modal-img');
+const modalContent = document.getElementById('modal-content');
 let populated = false;
 
 modal.addEventListener('click', () => modal.classList.remove('open'));
 document.addEventListener('keydown', e => { if (e.key === 'Escape') modal.classList.remove('open'); });
 
-function openModal(src) {
-  modalImg.src = src;
+function renderModal(thumbs) {
+  modalContent.innerHTML = thumbs
+    .map(t => `<img src="data:image/jpeg;base64,${t}">`)
+    .join('');
+}
+
+// Show the low-res thumbnails instantly as placeholders, then swap in the
+// full-res ones fetched on demand. Full-res images are never streamed, so the
+// live feed stays light over slow links.
+async function openModal(id, lowThumbs) {
+  modal.dataset.id = String(id);
+  renderModal(lowThumbs);
   modal.classList.add('open');
+  if (id == null) return;
+  try {
+    const res = await fetch(`/thumbs/${id}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    // Bail if the user already closed it (or opened a different card).
+    if (!modal.classList.contains('open') || modal.dataset.id !== String(id)) return;
+    if (data.thumbs && data.thumbs.length) renderModal(data.thumbs);
+  } catch (e) { /* keep the low-res fallback */ }
 }
 
 function esc(s) {
@@ -105,8 +155,10 @@ function addCard(e) {
   if (!populated) { feed.innerHTML = ''; populated = true; }
   const d = document.createElement('div');
   d.className = 'card';
-  const img = e.thumb
-    ? `<img class="thumb" src="data:image/jpeg;base64,${e.thumb}">`
+  const thumbs = e.thumbs && e.thumbs.length ? e.thumbs : (e.thumb ? [e.thumb] : []);
+  const more = thumbs.length > 1 ? `<span class="thumb-more">+${thumbs.length - 1}</span>` : '';
+  const img = thumbs.length
+    ? `<div class="thumb-wrap"><img class="thumb" src="data:image/jpeg;base64,${thumbs[0]}">${more}</div>`
     : `<div class="no-thumb"></div>`;
   const timeStr = e.inference_time != null
     ? `${fmtTime(e.time)} · ${e.inference_time.toFixed(2)}s${e.double_pass ? '*' : ''}`
@@ -128,10 +180,8 @@ function addCard(e) {
       ${detect}
       <p class="desc">${esc(e.description)}</p>
     </div>`;
-  if (e.thumb) {
-    d.classList.add('has-thumb');
-    d.addEventListener('click', () => openModal(`data:image/jpeg;base64,${e.thumb}`));
-  }
+  const wrap = d.querySelector('.thumb-wrap');
+  if (wrap) wrap.addEventListener('click', () => openModal(e.id, thumbs));
   feed.prepend(d);
 }
 
@@ -149,18 +199,63 @@ function updateCameras(status) {
     .join('');
 }
 
+// The connection is considered live only while messages (including the
+// server's periodic heartbeat) keep arriving. If the socket goes stale —
+// e.g. after the laptop sleeps or the tab is backgrounded for too long —
+// the browser may not fire `onclose`, leaving a dead connection that still
+// looks "live". The watchdog below detects that and forces a reconnect.
+const STALE_MS = 10000;
+let ws = null;
+let lastMessageTime = 0;
+let reconnectTimer = null;
+
+function setLive(isLive) { dot.className = isLive ? 'live' : ''; }
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 3000);
+}
+
 function connect() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(`${proto}//${location.host}/ws`);
-  ws.onopen  = () => dot.className = 'live';
-  ws.onclose = () => { dot.className = ''; setTimeout(connect, 3000); };
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
+  ws.onopen  = () => { lastMessageTime = Date.now(); setLive(true); };
+  ws.onclose = () => { setLive(false); scheduleReconnect(); };
+  ws.onerror = () => { try { ws.close(); } catch (e) {} };
   ws.onmessage = ({ data }) => {
+    lastMessageTime = Date.now();
+    setLive(true);
     const msg = JSON.parse(data);
+    if (msg.type === 'ping') return;
     if (msg.type === 'history') { msg.entries.forEach(addCard); return; }
     if (msg.type === 'cameras') { updateCameras(msg.status); return; }
     addCard(msg.entry);
   };
 }
+
+// Force a reconnect if the connection has gone quiet.
+function checkStale() {
+  if (ws && ws.readyState === WebSocket.OPEN && Date.now() - lastMessageTime > STALE_MS) {
+    setLive(false);
+    ws.close();  // triggers onclose -> reconnect
+  }
+}
+setInterval(checkStale, 5000);
+
+// Re-check the moment the page is shown again after being hidden.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+    setLive(false);
+    connect();
+  } else {
+    checkStale();
+  }
+});
+
+document.getElementById('refresh').addEventListener('click', () => location.reload());
+
 connect();
 </script>
 </body>

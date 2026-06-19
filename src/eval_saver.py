@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from utils import save_clip
+from utils import save_clip_and_data
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ class EvalSaver:
         if not self._save_alerts or score < self._alert_threshold:
             return
         ts = time.strftime("%Y%m%d_%H%M%S")
-        save_clip(self._alerts_dir / f"{ts}_score{score}", messages, frames, self._video_fps)
+        save_clip_and_data(self._alerts_dir / f"{ts}_score{score}", messages, frames, self._video_fps)
         self._rotate_alerts()
 
     def _rotate_alerts(self) -> None:
@@ -99,4 +99,4 @@ class EvalSaver:
             return
 
         ts = time.strftime("%Y%m%d_%H%M%S")
-        save_clip(self._eval_dir / f"{ts}_score{score}", messages, frames, self._video_fps)
+        save_clip_and_data(self._eval_dir / f"{ts}_score{score}", messages, frames, self._video_fps)

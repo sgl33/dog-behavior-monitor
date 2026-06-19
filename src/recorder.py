@@ -20,7 +20,6 @@ import numpy as np
 
 from config import RecorderConfig
 from telegram import TelegramClient
-from utils import encode_frame
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +45,7 @@ class Recorder(threading.Thread):
         self._offline_alert_seconds = config.offline_alert_seconds
         self._stale_stream_seconds = config.stale_stream_seconds
         self._recovery_seconds = config.recovery_seconds
-        self._buffer: deque[tuple[datetime, np.ndarray, str]] = deque(maxlen=config.fps * config.buffer_seconds)
+        self._buffer: deque[tuple[datetime, np.ndarray]] = deque(maxlen=config.fps * config.buffer_seconds)
         self._lock = threading.Lock()
         self._latest_boxes: list[tuple[int, int, int, int]] = []
         self._stop_event = threading.Event()
@@ -130,11 +129,11 @@ class Recorder(threading.Thread):
         return got_frame
 
     def _store_frame(self, frame: np.ndarray) -> None:
-        # Copy and encode outside the lock — both are non-trivial (a full-frame
-        # memcpy + JPEG encode) and frame is thread-local, so only the append
-        # needs guarding.
-        f = frame.copy()
-        item = (datetime.now(), f, encode_frame(f))
+        # Copy outside the lock — the full-frame memcpy is non-trivial and frame
+        # is thread-local, so only the append needs guarding. JPEG encoding is
+        # deferred to sampling time (see _build_frame_content): every frame here
+        # is buffered but only the handful actually sent to the LLM get encoded.
+        item = (datetime.now(), frame.copy())
         with self._lock:
             self._buffer.append(item)
 
@@ -195,9 +194,9 @@ class Recorder(threading.Thread):
 
     def get_frames(
         self, last_seconds: float
-    ) -> list[tuple[datetime, np.ndarray, str]]:
+    ) -> list[tuple[datetime, np.ndarray]]:
         """
-        Get most recent (timestamp, frame data, base64 encoding) frames.
+        Get most recent (timestamp, frame data) frames.
         """
         cutoff = datetime.now()
         with self._lock:

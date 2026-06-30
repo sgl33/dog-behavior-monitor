@@ -9,6 +9,7 @@ import numpy as np
 import requests
 
 from config import Config, WebServerConfig
+from utils import compile_video
 
 if TYPE_CHECKING:
     from recorder import Recorder
@@ -43,9 +44,10 @@ class WebServerClient:
     """
     CAMERA_STATUS_PUBLISH_INTERVAL = 0.5
 
-    def __init__(self, config: WebServerConfig):
+    def __init__(self, config: WebServerConfig, video_fps: float = 5.0):
         self._push_url = config.push_url
         self._public_url = config.public_url
+        self._video_fps = video_fps
 
     @property
     def public_url(self) -> str:
@@ -62,6 +64,7 @@ class WebServerClient:
         cameras: list[str] | None = None,
         detected_by: str | None = None,
         double_pass: bool = False,
+        clip_frames_by_camera: dict[str, list[np.ndarray]] | None = None,
     ) -> None:
         """
         Push a single behavioral analysis result to the web server via HTTP.
@@ -78,6 +81,11 @@ class WebServerClient:
             cameras (list[str] | None): List of camera names.
             detected_by (str | None): "YOLO" or "LLM"
             double_pass (bool): Whether this result is from a second pass.
+            clip_frames_by_camera (dict[str, list[np.ndarray]] | None): Sampled
+                frames grouped by camera. Each camera is compiled into its own
+                MP4 so the user gets one clip per source. The web server keeps
+                these for the most recent results; older results fall back to
+                the thumbnails.
         """
         # Encode frames to JPG thumbnails, sorted by image size. Each frame
         # yields a low-res thumbnail (inlined into the push) and a full-res one
@@ -85,6 +93,23 @@ class WebServerClient:
         ordered = sorted(frames or [], key=lambda f: f.shape[0] * f.shape[1])
         thumbs = [_encode_thumb(f, _THUMB_LOW_W, _THUMB_LOW_H) for f in ordered]
         full_thumbs = [_encode_thumb(f, _THUMB_HIGH_W, _THUMB_HIGH_H) for f in ordered]
+
+        # Compile one MP4 per camera, each base64-encoded for the push. Like the
+        # full-res thumbnails they are stored server-side and fetched on demand,
+        # so they never bloat the live WebSocket stream. A clip is far smaller
+        # than the raw frames, so keeping a handful server-side is cheap.
+        clips = []
+        for camera, cam_frames in (clip_frames_by_camera or {}).items():
+            if not cam_frames:
+                continue
+            try:
+                clips.append(
+                    base64.b64encode(
+                        compile_video(cam_frames, self._video_fps)
+                    ).decode()
+                )
+            except Exception:
+                logger.warning("Failed to compile clip for camera %s", camera)
 
         # Send HTTP request to web server
         try:
@@ -97,6 +122,7 @@ class WebServerClient:
                     "description": description,
                     "thumbs": thumbs,
                     "full_thumbs": full_thumbs,
+                    "clips": clips,
                     "inference_time": inference_time,
                     "cameras": cameras,
                     "detected_by": detected_by,

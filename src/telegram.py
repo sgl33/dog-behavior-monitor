@@ -226,7 +226,7 @@ class TelegramClient:
         video_bytes = compile_video(frames, self._video_fps)
         self._last_alert_time = now_mono
         self._last_alert_score = score
-        text = f"{score} - {html.escape(summary)}\n\n{html.escape(description)}\n\n{footer_timestamp()}"
+        text = f"{score} - {html.escape(summary)}\n\n{html.escape(description)}"
         reply_markup = json.dumps({"inline_keyboard": [[
             {"text": "Live", "url": self._live_stream_url},
             {"text": "Logs", "url": self._logs_url},

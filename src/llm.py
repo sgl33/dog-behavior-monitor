@@ -15,6 +15,11 @@ from utils import encode_frame
 
 logger = logging.getLogger(__name__)
 
+# Max seconds apart two cameras' frames may be to share a single "t=" instant
+# header. Purely a labeling/grouping window — frames outside it are still sent,
+# just under their own header. Loosen it to group more cameras per instant.
+_FRAME_SYNC_TOLERANCE = 0.1
+
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 _ANALYZE_PROMPT_PATH = _PROMPTS_DIR / "analyze_prompt.txt"
 _DETECT_PROMPT_PATH = _PROMPTS_DIR / "detect_prompt.txt"
@@ -46,7 +51,14 @@ _DETECTION_SCHEMA = {
 class LLMClient:
     _DETECT_PARSE_ATTEMPTS = 3
 
-    def __init__(self, config: LLMEndpointConfig, dog_description: str):
+    def __init__(
+        self,
+        config: LLMEndpointConfig,
+        dog_description: str,
+        verify_model: str | None = None,
+        verify_url: str | None = None,
+        verify_token: str | None = None,
+    ):
         self._vision_model = config.vision_model
         self._fast_model = config.fast_model
         self._memory_model = config.memory_model
@@ -57,6 +69,14 @@ class LLMClient:
         self._vision_url, self._vision_headers = self._endpoint(config.vision_url, config.vision_token)
         self._fast_url, self._fast_headers = self._endpoint(config.fast_url, config.fast_token)
         self._memory_url, self._memory_headers = self._endpoint(config.memory_url, config.memory_token)
+        # Verification (second-pass) model. Falls back to the vision model/endpoint
+        # when not configured, so an unset verify_* config reproduces the old
+        # behavior of re-running the same vision model.
+        self._verify_model = verify_model or config.vision_model
+        self._verify_url, self._verify_headers = self._endpoint(
+            verify_url or config.vision_url,
+            verify_token if verify_url else config.vision_token,
+        )
         # Pool used purely to enforce a hard wall-clock cap on each request: the
         # requests `timeout` is per-socket-read, so a server that accepts the
         # connection then trickles (or never finishes) bytes can hang far longer
@@ -96,11 +116,14 @@ class LLMClient:
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"] or ""
 
-    def _json_schema_payload(self, messages: list[dict], name: str, schema: dict) -> dict:
+    def _json_schema_payload(
+        self, messages: list[dict], name: str, schema: dict, model: str | None = None
+    ) -> dict:
         return {
-            "model": self._vision_model,
+            "model": model or self._vision_model,
             "messages": messages,
             "max_tokens": self._max_tokens,
+            "temperature": 0,
             "enable_thinking": False,
             "response_format": {
                 "type": "json_schema",
@@ -116,40 +139,48 @@ class LLMClient:
         self,
         frames_by_camera: dict[str, list[tuple[datetime, np.ndarray]]],
         boxes_by_camera: dict[str, list[tuple[int, int, int, int]]],
-    ) -> tuple[str, list[np.ndarray], list[dict]]:
+        verify: bool = False,
+    ) -> tuple[str, list[np.ndarray], dict[str, list[np.ndarray]], list[dict]]:
         """
         Crop and run LLM analysis on video frames.
 
         Args:
             frames_by_camera: dict mapping camera name to list of
                 (timestamp, frame) tuples
-            boxes_by_camera: dict mapping camera name to list of bounding boxes 
+            boxes_by_camera: dict mapping camera name to list of bounding boxes
                 (x1, y1, x2, y2)
+            verify: when True, use the verification model/endpoint instead of the
+                primary vision model (used for the second confirmation pass).
 
-        Returns: 
+        Returns:
             str: LLM response content JSON as string
-            list[np.ndarray]: list of sampled frames
+            list[np.ndarray]: list of sampled frames (camera-major)
+            dict[str, list[np.ndarray]]: sampled frames grouped by camera
             list[dict]: list of messages sent to LLM
         """
         prompt = _ANALYZE_PROMPT_PATH.read_text().format(
             dog_description=self._dog_description
         )
-        content, sampled_frames = _build_frame_content(
-            frames_by_camera, boxes_by_camera, 
+        content, sampled_frames, sampled_by_camera = _build_frame_content(
+            frames_by_camera, boxes_by_camera,
             self._frame_sampling, self._crop_padding
         )
         messages = [
             {"role": "system", "content": prompt},
             {"role": "user", "content": content},
         ]
+        model = self._verify_model if verify else self._vision_model
+        url = self._verify_url if verify else self._vision_url
+        headers = self._verify_headers if verify else self._vision_headers
         payload = self._json_schema_payload(
             messages,
             name="dog_analysis",
             schema=_ANALYSIS_SCHEMA,
+            model=model,
         )
 
-        content = self._post(self._vision_url, self._vision_headers, payload, timeout=60)
-        return content, sampled_frames, messages
+        content = self._post(url, headers, payload, timeout=60)
+        return content, sampled_frames, sampled_by_camera, messages
 
     def summarize(
         self,
@@ -227,6 +258,9 @@ class LLMClient:
     def set_vision_model(self, model: str) -> None:
         self._vision_model = model
 
+    def set_verify_model(self, model: str) -> None:
+        self._verify_model = model
+
     def set_fast_model(self, model: str) -> None:
         self._fast_model = model
 
@@ -235,6 +269,9 @@ class LLMClient:
 
     def set_vision_endpoint(self, url: str, token: str | None) -> None:
         self._vision_url, self._vision_headers = self._endpoint(url, token)
+
+    def set_verify_endpoint(self, url: str, token: str | None) -> None:
+        self._verify_url, self._verify_headers = self._endpoint(url, token)
 
     def set_fast_endpoint(self, url: str, token: str | None) -> None:
         self._fast_url, self._fast_headers = self._endpoint(url, token)
@@ -279,29 +316,73 @@ def _build_frame_content(
     boxes_by_camera: dict[str, list[tuple[int, int, int, int]]],
     frame_sampling: list[tuple[float, float]],
     crop_padding: float,
-) -> tuple[list[dict], list[np.ndarray]]:
+) -> tuple[list[dict], list[np.ndarray], dict[str, list[np.ndarray]]]:
     """
     Build LLM message content and the matching sampled frames from camera frames.
 
-    Frames are sampled per tier, cropped to the detection boxes (with padding)
-    when boxes are present, and emitted as interleaved timestamp/image entries.
-    """
-    content: list[dict] = []
-    sampled_frames: list[np.ndarray] = []
+    Each camera is sampled independently per the tiers, then all sampled frames
+    are pooled and emitted time-major (ascending timestamp). Frames that fall
+    within `_FRAME_SYNC_TOLERANCE` of each other are grouped under a single
+    "t=<offset>s" header as one instant seen from overlapping cameras; a frame
+    that lines up with nothing simply gets its own header. Every sampled frame
+    is sent to the LLM — grouping only affects labeling, never inclusion.
+    Timestamps are normalized so the earliest sampled frame is 0, and each frame
+    is cropped to the detection boxes (with padding) when boxes are present.
 
+    The returned frame list is ordered camera-major (each camera's frames in
+    time order, one camera after another) rather than in the time-major content
+    order, so the compiled alert/eval video stays watchable as a coherent clip
+    per camera instead of flickering between angles. The per-camera grouping is
+    also returned so callers can compile one clip per source.
+    """
+    pooled: list[tuple[datetime, str, np.ndarray]] = []
     for camera, frames in frames_by_camera.items():
         boxes = boxes_by_camera.get(camera, [])
         for ts, frame in _sample_tiered(frames, frame_sampling):
             display = _crop(frame, boxes, crop_padding) if boxes else frame
-            img_b64 = encode_frame(display)
-            sampled_frames.append(display)
-            content.append({"type": "text", "text": f"{camera} @ {ts.strftime('%H:%M:%S.%f')[:-3]}"})
+            pooled.append((ts, camera, display))
+
+    content: list[dict] = []
+    if not pooled:
+        return content, [], {}
+    pooled.sort(key=lambda item: item[0])
+    base_ts = pooled[0][0]
+
+    frames_by_camera_out: dict[str, list[np.ndarray]] = {}
+    group: list[tuple[str, np.ndarray]] = []
+    group_start: datetime | None = None
+    group_cameras: set[str] = set()
+
+    def flush() -> None:
+        if not group:
+            return
+        offset = (group_start - base_ts).total_seconds()
+        content.append({"type": "text", "text": f"t={offset:.2f}s"})
+        for camera, display in group:
+            frames_by_camera_out.setdefault(camera, []).append(display)
+            content.append({"type": "text", "text": camera})
             content.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+                "image_url": {"url": f"data:image/jpeg;base64,{encode_frame(display)}"},
             })
 
-    return content, sampled_frames
+    for ts, camera, display in pooled:
+        in_window = (
+            group_start is not None
+            and (ts - group_start).total_seconds() <= _FRAME_SYNC_TOLERANCE
+        )
+        if in_window and camera not in group_cameras:
+            group.append((camera, display))
+            group_cameras.add(camera)
+        else:
+            flush()
+            group = [(camera, display)]
+            group_start = ts
+            group_cameras = {camera}
+    flush()
+
+    sampled_frames = [frame for frames in frames_by_camera_out.values() for frame in frames]
+    return content, sampled_frames, frames_by_camera_out
 
 
 def _crop(
@@ -324,8 +405,8 @@ def _crop(
     return frame[y1:y2, x1:x2]
 
 def _sample(
-    frames: list[tuple[datetime, np.ndarray]], 
-    num_frames: int
+    frames: list[tuple[datetime, np.ndarray]],
+    num_frames: int,
 ) -> list[tuple[datetime, np.ndarray]]:
     """
     Sample `num_frames` evenly spaced frames from the list, including the first
@@ -348,9 +429,9 @@ def _sample_tiered(
     Args:
         frames (list[tuple[datetime, np.ndarray]]): List of (timestamp,
             frame) tuples sorted by timestamp ascending
-        tiers (list[tuple[float, float]]): List of (seconds, fps) tuples 
-            specifying the sampling tiers in order from latest to oldest. 
-            For example, [(3, 5), (7, 1)] samples 3 most recent seconds at 
+        tiers (list[tuple[float, float]]): List of (seconds, fps) tuples
+            specifying the sampling tiers in order from latest to oldest.
+            For example, [(3, 5), (7, 1)] samples 3 most recent seconds at
             5 fps, then the 7 seconds before that at 1 fps. Total seconds
             must be greater than the age of the oldest frame.
     Returns:

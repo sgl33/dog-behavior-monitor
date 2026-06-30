@@ -45,6 +45,7 @@ class Manager(threading.Thread):
         self._alert_threshold = config.telegram.alert_threshold
         self._no_detection_interval = config.no_detection_fallback_seconds
         self._fallback_detection_enabled = config.fallback_detection_enabled
+        self._double_pass_enabled = config.double_pass.enabled
         self._llm_enabled = True
         self._llm_logger = llm_logger
         self._eval_saver = eval_saver
@@ -169,7 +170,7 @@ class Manager(threading.Thread):
             logger.info("LLM inference started")
 
             # Run LLM inference
-            response, frames, messages = self._llm_client.analyze(frames_by_camera, boxes_by_camera)
+            response, frames, frames_by_camera_sampled, messages = self._llm_client.analyze(frames_by_camera, boxes_by_camera)
             self._last_llm_inference_latency = time.monotonic() - trigger_time
             self._check_inference_slow(self._last_llm_inference_latency)
             parsed = json.loads(extract_json(response))
@@ -178,15 +179,18 @@ class Manager(threading.Thread):
 
             # If above global threshold, re-run it to reduce false positives
             double_pass = False
-            if score >= self._alert_threshold:
+            if self._double_pass_enabled and score >= self._alert_threshold:
                 logger.info(
                     "Score %d >= threshold %d, running second pass to verify", 
                     score, self._alert_threshold
                 )
-                response2, frames2, messages2 = self._llm_client.analyze(frames_by_camera, boxes_by_camera)
+                response2, frames2, frames_by_camera_sampled2, messages2 = self._llm_client.analyze(
+                    frames_by_camera, boxes_by_camera, verify=True
+                )
                 parsed2 = json.loads(extract_json(response2))
                 score, summary, description = parsed2["score"], parsed2["summary"], parsed2["description"]
                 frames, messages = frames2, messages2
+                frames_by_camera_sampled = frames_by_camera_sampled2
                 double_pass = True
                 logger.info("LLM result (pass 2): %d - %s", score, description)
 
@@ -208,7 +212,8 @@ class Manager(threading.Thread):
                 self._web_server.push_result(
                     score, summary, description, result_time, web_frames,
                     self._last_llm_inference_latency,
-                    list(frames_by_camera.keys()), detected_by, double_pass
+                    list(frames_by_camera.keys()), detected_by, double_pass,
+                    clip_frames_by_camera=frames_by_camera_sampled,
                 )
             if self._eval_saver is not None:
                 self._eval_saver.save_alert(score, messages, frames)
@@ -303,6 +308,9 @@ class Manager(threading.Thread):
 
     def set_fallback_detection_enabled(self, enabled: bool) -> None:
         self._fallback_detection_enabled = enabled
+
+    def set_double_pass_enabled(self, enabled: bool) -> None:
+        self._double_pass_enabled = enabled
 
     def set_cooldown(self, cooldown: float) -> None:
         self._post_llm_cooldown = cooldown

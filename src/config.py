@@ -75,6 +75,17 @@ class TelegramConfig:
 
 
 @dataclass
+class DoublePassConfig:
+    # When enabled, an LLM result at/above the alert threshold is re-run to
+    # confirm before alerting. verify_* set a separate model/endpoint for that
+    # second pass; when unset, it reuses the vision model/endpoint.
+    enabled: bool = True
+    verify_model: str | None = None
+    verify_url: str | None = None
+    verify_token: str | None = None
+
+
+@dataclass
 class Config:
     streams: dict[str, StreamConfig]
     recorder: RecorderConfig
@@ -92,7 +103,9 @@ class Config:
     fallback_detection_enabled: bool
     eval_cap: int
     alert_cap: int = 1000
+    double_pass: DoublePassConfig = field(default_factory=DoublePassConfig)
     healthcheck_url: str | None = None
+    video_playback_speed: float = 4.0
     yolo_model_path: Path = field(init=False)
 
     def __post_init__(self) -> None:
@@ -123,6 +136,8 @@ def load_config(path: Path) -> Config:
         eval_cap=raw.get("eval_cap", 200),
         alert_cap=raw.get("alert_cap", 1000),
         healthcheck_url=raw.get("healthcheck_url"),
+        video_playback_speed=raw.get("video_playback_speed", 4.0),
+        double_pass=DoublePassConfig(**raw.get("double_pass", {})),
     )
 
 
@@ -165,6 +180,12 @@ def watch_config(
             ep = new_config.llm_endpoint
             llm_client.set_vision_model(ep.vision_model)
             llm_client.set_vision_endpoint(ep.vision_url, ep.vision_token)
+            dp = new_config.double_pass
+            llm_client.set_verify_model(dp.verify_model or ep.vision_model)
+            llm_client.set_verify_endpoint(
+                dp.verify_url or ep.vision_url,
+                dp.verify_token if dp.verify_url else ep.vision_token,
+            )
             llm_client.set_fast_model(ep.fast_model)
             llm_client.set_fast_endpoint(ep.fast_url, ep.fast_token)
             llm_client.set_memory_model(ep.memory_model)
@@ -182,14 +203,15 @@ def watch_config(
             memory_querier.set_dog_name(new_config.dog_name)
 
             manager.set_fallback_detection_enabled(new_config.fallback_detection_enabled)
+            manager.set_double_pass_enabled(new_config.double_pass.enabled)
             manager.set_cooldown(ep.cooldown)
             manager.set_min_interval(ep.min_interval)
             manager.set_detection_window(ep.detection_window)
             manager.set_slow_threshold(ep.slow_threshold)
             manager.set_no_detection_interval(new_config.no_detection_fallback_seconds)
             logger.info(
-                "Reloaded manager: fallback=%s cooldown=%s min_interval=%s detection_window=%s slow_threshold=%s no_detection_interval=%s",
-                new_config.fallback_detection_enabled, ep.cooldown, ep.min_interval,
+                "Reloaded manager: fallback=%s double_pass=%s cooldown=%s min_interval=%s detection_window=%s slow_threshold=%s no_detection_interval=%s",
+                new_config.fallback_detection_enabled, new_config.double_pass.enabled, ep.cooldown, ep.min_interval,
                 ep.detection_window, ep.slow_threshold, new_config.no_detection_fallback_seconds,
             )
 

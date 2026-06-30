@@ -1,11 +1,12 @@
 import asyncio
+import base64
 import json
 import logging
 from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
@@ -35,13 +36,18 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
 
-_history: deque = deque(maxlen=50)
+_history: deque = deque(maxlen=100)
 _clients: set[WebSocket] = set()
 _camera_status: dict[str, dict] = {}
 # Full-res thumbnails kept out of the live stream and fetched on demand, keyed
 # by entry id. Bounded so memory tracks the (capped) history.
 _full_thumbs: "OrderedDict[str, list[str]]" = OrderedDict()
-_FULL_THUMBS_MAX = 50
+_FULL_THUMBS_MAX = 100
+# Compiled MP4 clips (raw bytes), one per camera, kept only for the most recent
+# results and fetched on demand. Clips are heavier than thumbnails, so we keep
+# far fewer; older results fall back to their thumbnails.
+_clips: "OrderedDict[str, list[bytes]]" = OrderedDict()
+_CLIPS_MAX = 25
 _next_id = 0
 
 
@@ -52,6 +58,7 @@ class PushPayload(BaseModel):
     description: str
     thumbs: list[str] | None = None
     full_thumbs: list[str] | None = None
+    clips: list[str] | None = None
     inference_time: float | None = None
     cameras: list[str] | None = None
     detected_by: str | None = None
@@ -76,9 +83,10 @@ async def index(request: Request):
 async def push(payload: PushPayload):
     global _next_id
     entry = payload.model_dump()
-    # Pull the full-res thumbnails out of the broadcast/history payload and
-    # stash them separately under a fresh id; the client fetches them lazily.
+    # Pull the full-res thumbnails and clips out of the broadcast/history payload
+    # and stash them separately under a fresh id; the client fetches them lazily.
     full = entry.pop("full_thumbs", None)
+    clips_b64 = entry.pop("clips", None)
     entry_id = str(_next_id)
     _next_id += 1
     entry["id"] = entry_id
@@ -86,17 +94,39 @@ async def push(payload: PushPayload):
         _full_thumbs[entry_id] = full
         while len(_full_thumbs) > _FULL_THUMBS_MAX:
             _full_thumbs.popitem(last=False)
+    if clips_b64:
+        _clips[entry_id] = [base64.b64decode(c) for c in clips_b64]
+        while len(_clips) > _CLIPS_MAX:
+            _clips.popitem(last=False)
     _history.append(entry)
     await _broadcast({"type": "result", "entry": entry})
     return JSONResponse({"ok": True})
 
 
-@app.get("/thumbs/{entry_id}")
-async def thumbs(entry_id: str):
+@app.get("/media/{entry_id}")
+async def media(entry_id: str):
+    # Single endpoint the client hits to decide what to show: one video clip per
+    # camera when available (kept only for recent results), else the full-res
+    # stills for older entries whose clips were evicted. The clip bytes
+    # themselves are streamed lazily from /clip below.
+    clips = _clips.get(entry_id)
+    if clips:
+        return JSONResponse({
+            "type": "video",
+            "clips": [f"/clip/{entry_id}/{i}" for i in range(len(clips))],
+        })
     full = _full_thumbs.get(entry_id)
-    if full is None:
+    if full is not None:
+        return JSONResponse({"type": "images", "thumbs": full})
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+
+@app.get("/clip/{entry_id}/{index}")
+async def clip(entry_id: str, index: int):
+    clips = _clips.get(entry_id)
+    if clips is None or not (0 <= index < len(clips)):
         return JSONResponse({"error": "not found"}, status_code=404)
-    return JSONResponse({"thumbs": full})
+    return Response(content=clips[index], media_type="video/mp4")
 
 
 @app.post("/push_cameras")

@@ -64,16 +64,18 @@ def setup_logging() -> None:
 def compute_video_fps(
     config: Config,
     default: float = 5.0,
-    multiplier: float = 4.0
 ) -> float:
-    """Derive the output video FPS from the LLM frame-sampling tiers."""
+    """
+    Derive the output video FPS from the LLM frame-sampling tiers, scaled by
+    `config.video_playback_speed` (1.0 = real time, lower = slower playback).
+    """
     tiers = config.llm_endpoint.frame_sampling
     total_frames = sum(round(t["fps"] * t["seconds"]) for t in tiers)
     total_seconds = sum(t["seconds"] for t in tiers)
     return (
-        total_frames / total_seconds 
+        total_frames / total_seconds
         if total_seconds > 0 else default
-    ) * multiplier
+    ) * config.video_playback_speed
 
 
 def init_yolo(config: Config) -> YOLO:
@@ -112,7 +114,7 @@ def main():
     model_lock = threading.Lock()
 
     # Instantiate objects
-    web_client = WebServerClient(config.web_server)
+    web_client = WebServerClient(config.web_server, video_fps=video_fps)
     telegram_client = TelegramClient(
         config=config.telegram,
         video_fps=video_fps,
@@ -128,8 +130,11 @@ def main():
         for camera, stream in config.streams.items()
     }
     llm_client = LLMClient(
-        config=config.llm_endpoint, 
-        dog_description=config.dog_description
+        config=config.llm_endpoint,
+        dog_description=config.dog_description,
+        verify_model=config.double_pass.verify_model,
+        verify_url=config.double_pass.verify_url,
+        verify_token=config.double_pass.verify_token,
     )
     llm_logger = LLMOutputLogger(
         data_dir=Path(__file__).parent.parent / "data",

@@ -22,6 +22,15 @@ services:
     ipc: host
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # AMD GPU (ROCm):
+    # devices:
+    #   - /dev/kfd:/dev/kfd
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - "44"   # video
+    #   - "991"  # render
+    # security_opt:
+    #   - seccomp:unconfined
     # # Intel GPU (OpenVINO):
     # devices:
     #   - /dev/dri/renderD128:/dev/dri/renderD128

@@ -111,6 +111,37 @@ fallback_detection_enabled: true
 no_detection_fallback_seconds: 10.0
 
 
+# --- Double-Pass Verification ---
+# When an LLM result scores at or above the alert threshold, re-run the LLM a
+# second time to confirm before alerting. Reduces false positives at the cost
+# of an extra inference per high-scoring event.
+
+double_pass:
+  enabled: true
+
+  # Required if enabled. They set a separate
+  # multimodal model for the second pass — point them at a stronger model to
+  # confirm high-scoring events.
+  verify_model: qwen/qwen3-vl-8b
+  verify_url: http://host.docker.internal:8000/v1
+  verify_token: fake-token
+
+
+# --- Eval / Dataset capture ---
+
+eval_cap: 200
+# Maximum number of low-score samples to save in data/eval/ for building an eval set.
+
+alert_cap: 1000
+# Maximum number of alert clips to keep in data/alerts/. Once exceeded, the oldest
+# clips (.mp4 + .json) are deleted. This is a ceiling, not a target.
+
+video_playback_speed: 4.0
+# Playback speed of compiled alert/eval videos relative to real time, applied on
+# top of the frame-sampling rate. 1.0 = real time, 4.0 = 4x faster, lower = slower
+# (slow motion). Takes effect on restart.
+
+
 # --- System ---
 
 camera_stale_threshold: 15

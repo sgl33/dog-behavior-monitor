@@ -85,7 +85,12 @@ h1 { font-size: 15px; font-weight: 600; }
   overflow-x: hidden; overflow-y: auto;
   max-width: 96vw; max-height: 96vh; align-items: center; justify-content: center;
 }
-#modal-content img { max-width: 92vw; max-height: 88vh; border-radius: 6px; object-fit: contain; }
+#modal-content img,
+#modal-content video { max-width: 92vw; max-height: 88vh; border-radius: 6px; object-fit: contain; }
+.modal-note {
+  flex-basis: 100%; text-align: center; margin: 0;
+  color: #cbd5e1; font-size: 13px;
+}
 </style>
 </head>
 <body>
@@ -114,27 +119,46 @@ let populated = false;
 modal.addEventListener('click', () => modal.classList.remove('open'));
 document.addEventListener('keydown', e => { if (e.key === 'Escape') modal.classList.remove('open'); });
 
-function renderModal(thumbs) {
-  modalContent.innerHTML = thumbs
+function renderModal(thumbs, note) {
+  const noteHtml = note ? `<p class="modal-note">${note}</p>` : '';
+  modalContent.innerHTML = noteHtml + thumbs
     .map(t => `<img src="data:image/jpeg;base64,${t}">`)
     .join('');
 }
 
-// Show the low-res thumbnails instantly as placeholders, then swap in the
-// full-res ones fetched on demand. Full-res images are never streamed, so the
-// live feed stays light over slow links.
+function renderVideos(urls) {
+  modalContent.innerHTML = '';
+  for (const url of urls) {
+    const video = document.createElement('video');
+    video.src = url;
+    video.controls = true;
+    video.autoplay = true;
+    video.loop = true;
+    video.muted = true;
+    video.playsInline = true;
+    modalContent.appendChild(video);
+  }
+}
+
+// Show the low-res thumbnails instantly as placeholders, then swap in the media
+// fetched on demand from a single endpoint: one video clip per camera for recent
+// results, or the full-res stills for older ones whose clips were evicted. The
+// clip bytes are not streamed live, so the feed stays light over slow links.
 async function openModal(id, lowThumbs) {
   modal.dataset.id = String(id);
   renderModal(lowThumbs);
   modal.classList.add('open');
   if (id == null) return;
   try {
-    const res = await fetch(`/thumbs/${id}`);
+    const res = await fetch(`/media/${id}`);
     if (!res.ok) return;
     const data = await res.json();
     // Bail if the user already closed it (or opened a different card).
     if (!modal.classList.contains('open') || modal.dataset.id !== String(id)) return;
-    if (data.thumbs && data.thumbs.length) renderModal(data.thumbs);
+    if (data.type === 'video' && data.clips && data.clips.length)
+      renderVideos(data.clips);
+    else if (data.thumbs && data.thumbs.length)
+      renderModal(data.thumbs, 'Video clip no longer available — showing snapshots.');
   } catch (e) { /* keep the low-res fallback */ }
 }
 

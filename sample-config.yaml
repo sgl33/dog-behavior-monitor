@@ -20,7 +20,7 @@ recorder:
   # Higher values give the LLM more frames to analyze but use more memory.
 
   buffer_seconds: 10
-  # Rolling buffer size in seconds.
+  # Rolling buffer size in seconds. Must be >= llm_endpoint.analysis_window.
 
   offline_alert_seconds: 15.0
   # Seconds a stream must be unreachable before sending a Telegram alert.
@@ -46,6 +46,19 @@ yolo_device: intel:GPU
 
 yolo_image_size: 960
 # Input resolution for YOLO. Higher values improve accuracy but increase latency.
+
+yolo_confidence: 0.25
+# Minimum confidence (0-1) for a YOLO detection to count as a dog. Lower values
+# catch more dogs but raise false positives; raise it if YOLO keeps firing the
+# LLM on things that aren't the dog. Hot-reloadable.
+
+box_selection: highest
+# Which dog box the analysis frames are cropped to when YOLO finds more than one
+# in a frame. Hot-reloadable.
+#   highest - crop to the single highest-confidence box.
+#   union   - crop to a box spanning every detection. Right for multiple dogs,
+#             but one false positive across the room widens the crop to cover
+#             both it and the dog, which can undo the crop entirely.
 
 detect_interval: 1.0
 # Seconds between YOLO inference runs per camera.
@@ -76,6 +89,11 @@ llm_endpoint:
 
   detection_window: 5.0
   # A YOLO detection stays "active" within this window (in seconds).
+  # Controls how long a hit keeps firing the LLM, not how much footage it sees.
+
+  analysis_window: 5.0
+  # Seconds of buffered video pulled from each recorder per LLM call. Must be
+  # >= the total seconds of `frame_sampling` and <= `recorder.buffer_seconds`.
 
   frame_sampling:
     - seconds: 2
@@ -84,7 +102,7 @@ llm_endpoint:
       fps: 3
   # Tiered frame sampling, most-recent-first. Each tier specifies how many
   # seconds to look back and at what framerate to sample.
-  # Must be less than `recorder.buffer_seconds`.
+  # Total seconds must not exceed `analysis_window`.
 
   crop_padding: 0.3
   # Fractional padding added around each YOLO bounding box before cropping.
@@ -93,11 +111,21 @@ llm_endpoint:
   # Max tokens the LLM may output. Increase if you get JSON decoding errors
   # on reasoning models.
 
+  temperature: 0
+  # Sampling temperature for the vision/detection JSON-schema calls.
+  # 0 = deterministic; raise for more varied output.
+
   cooldown: 1.0
   # Minimum seconds between one LLM call finishing and the next one starting.
 
-  min_interval: 0.0
+  min_interval: 2.0
   # Minimum seconds between LLM call starts, regardless of how long inference takes.
+  # With max_concurrent > 1 this is what spaces out overlapping calls.
+
+  max_concurrent: 2
+  # Maximum number of LLM analysis calls allowed to run at the same time. Raising
+  # this lets a new call start while a previous one is still in flight (useful
+  # when inference is slower than the detection cadence), bounded by min_interval.
 
   slow_threshold: 30.0
   # LLM inference latency (seconds) above which a Telegram warning is sent.
@@ -118,6 +146,10 @@ no_detection_fallback_seconds: 10.0
 
 double_pass:
   enabled: true
+  # When a first pass scores at/above the alert threshold, re-run the LLM to
+  # confirm before alerting. The second pass pulls fresh frames captured while
+  # the first pass was running (the most recent detection_window seconds up to
+  # then), so it judges newer footage rather than re-analyzing identical frames.
 
   # Required if enabled. They set a separate
   # multimodal model for the second pass — point them at a stronger model to

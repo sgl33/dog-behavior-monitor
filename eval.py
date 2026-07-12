@@ -36,7 +36,13 @@ def _build_payload(user_content: list[dict], config: dict, args: argparse.Namesp
         "model": model,
         "messages": messages,
         "max_tokens": args.max_tokens or llm.get("max_tokens", 1024),
-        "enable_thinking": False,
+        # Mirrors LLMClient._no_reasoning: the switch differs per endpoint, and
+        # both ignore unknown top-level keys rather than erroring.
+        **(
+            {"reasoning": {"effort": "none", "exclude": True}}
+            if "openrouter.ai" in base_url
+            else {"chat_template_kwargs": {"enable_thinking": False}}
+        ),
         "response_format": {
             "type": "json_schema",
             "json_schema": {

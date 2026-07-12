@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import datetime, timedelta
@@ -15,10 +16,32 @@ from utils import encode_frame
 
 logger = logging.getLogger(__name__)
 
+
+class LLMResponseError(RuntimeError):
+    """
+    An LLM endpoint returned a well-formed HTTP response that carries no
+    completion. OpenRouter answers HTTP 200 with a body of
+    `{"error": {...}, "user_id": ...}` when an upstream provider fails after the
+    request was accepted, so a non-2xx status is not enough to detect failure.
+
+    `response` mirrors `requests.HTTPError.response` so callers can pull the
+    status and provider message off the exception the same way.
+    """
+
+    def __init__(self, message: str, response: requests.Response):
+        super().__init__(message)
+        self.response = response
+
+
 # Max seconds apart two cameras' frames may be to share a single "t=" instant
 # header. Purely a labeling/grouping window — frames outside it are still sent,
 # just under their own header. Loosen it to group more cameras per instant.
 _FRAME_SYNC_TOLERANCE = 0.1
+
+# Hard wall-clock cap on the verification pass. It only trims false positives,
+# and a caller that falls back to the pass 1 result is better than an alert that
+# arrives late, so this is deliberately far tighter than the primary timeout.
+_VERIFY_TIMEOUT = 5
 
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 _ANALYZE_PROMPT_PATH = _PROMPTS_DIR / "analyze_prompt.txt"
@@ -66,6 +89,7 @@ class LLMClient:
         self._frame_sampling = [(t["seconds"], t["fps"]) for t in config.frame_sampling]
         self._crop_padding = config.crop_padding
         self._max_tokens = config.max_tokens
+        self._temperature = config.temperature
         self._vision_url, self._vision_headers = self._endpoint(config.vision_url, config.vision_token)
         self._fast_url, self._fast_headers = self._endpoint(config.fast_url, config.fast_token)
         self._memory_url, self._memory_headers = self._endpoint(config.memory_url, config.memory_token)
@@ -91,14 +115,25 @@ class LLMClient:
             {"Authorization": f"Bearer {token}"} if token else {}
         )
 
-    def _post(self, url: str, headers: dict, payload: dict, timeout: int = 30) -> str:
+    def _post(
+        self, url: str, headers: dict, payload: dict, timeout: int = 30,
+        deadline: float | None = None, stream: bool = False,
+    ):
         # `timeout` is the per-socket connect/read timeout passed to requests;
         # `deadline` is an absolute wall-clock cap that catches a server which
         # trickles bytes slower than the read timeout but never stalls long
-        # enough to trip it. Give the pool worker a little headroom over the
-        # socket timeout so requests' own timeout fires first when it can.
-        deadline = timeout + 15
-        future = self._post_pool.submit(self._do_post, url, headers, payload, timeout)
+        # enough to trip it. By default give the pool worker a little headroom
+        # over the socket timeout so requests' own timeout fires first when it
+        # can; callers needing a hard cap can pass `deadline` explicitly.
+        #
+        # `stream=True` returns `(content, usage, timing)` instead of
+        # `(content, usage)`: the streamed path also measures time-to-first-token
+        # so callers can separate prefill from generation time. Either way the
+        # whole request runs in the pool worker, so `deadline` still bounds it.
+        if deadline is None:
+            deadline = timeout + 15
+        worker = self._do_post_stream if stream else self._do_post
+        future = self._post_pool.submit(worker, url, headers, payload, timeout)
         try:
             return future.result(timeout=deadline)
         except FuturesTimeout:
@@ -106,25 +141,128 @@ class LLMClient:
             raise TimeoutError(f"LLM request to {url} exceeded {deadline}s wall-clock deadline")
 
     @staticmethod
-    def _do_post(url: str, headers: dict, payload: dict, timeout: int) -> str:
+    def _do_post_stream(url: str, headers: dict, payload: dict, timeout: int) -> tuple[str, dict, dict]:
+        """
+        Stream the completion so prefill and generation time can be separated.
+
+        vLLM (and OpenRouter) report token *counts* in `usage` but never
+        per-phase timing, so the only way to get a generation tok/s that isn't
+        diluted by the prompt-eval phase — which dominates for image prompts —
+        is to time it here. Time-to-first-token approximates the prefill cost;
+        the span from the first to the last content token is the true generation
+        time. `stream_options.include_usage` asks for a final usage-only chunk;
+        a server that omits it just leaves `usage` empty and callers degrade to
+        showing no token stats rather than wrong ones.
+
+        Returns `(content, usage, timing)` where `timing` has `ttft` and
+        `generation_time` in seconds (either may be None if no tokens streamed).
+        """
+        body = {**payload, "stream": True, "stream_options": {"include_usage": True}}
+        start = time.monotonic()
+        first_token_at: float | None = None
+        last_token_at: float | None = None
+        parts: list[str] = []
+        usage: dict = {}
+        with requests.post(
+            url, headers=headers, json=body, stream=True,
+            timeout=(min(10, timeout), timeout),
+        ) as response:
+            response.raise_for_status()
+            for raw in response.iter_lines():
+                if not raw:
+                    continue
+                line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                if not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except ValueError:
+                    continue
+                error = chunk.get("error")
+                if error:
+                    message = error.get("message") if isinstance(error, dict) else None
+                    raise LLMResponseError(message or str(error), response)
+                if chunk.get("usage"):
+                    usage = chunk["usage"]
+                for choice in chunk.get("choices") or []:
+                    piece = (choice.get("delta") or {}).get("content")
+                    if piece:
+                        now = time.monotonic()
+                        if first_token_at is None:
+                            first_token_at = now
+                        last_token_at = now
+                        parts.append(piece)
+        timing = {
+            "ttft": (first_token_at - start) if first_token_at is not None else None,
+            "generation_time": (
+                last_token_at - first_token_at
+                if first_token_at is not None and last_token_at is not None
+                else None
+            ),
+        }
+        return "".join(parts), usage, timing
+
+    @staticmethod
+    def _do_post(url: str, headers: dict, payload: dict, timeout: int) -> tuple[str, dict]:
         response = requests.post(
             url,
             headers=headers,
             json=payload,
-            timeout=(10, timeout),
+            # Never let the connect phase alone outlast the caller's budget.
+            timeout=(min(10, timeout), timeout),
         )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"] or ""
+        try:
+            body = response.json()
+        except ValueError as e:
+            raise LLMResponseError(
+                f"non-JSON response: {response.text[:200]!r}", response
+            ) from e
+
+        error = body.get("error")
+        if error:
+            message = error.get("message") or str(error)
+            provider = (error.get("metadata") or {}).get("provider_name")
+            code = error.get("code")
+            detail = ", ".join(
+                str(part) for part in (message, provider and f"provider={provider}", code and f"code={code}") if part
+            )
+            raise LLMResponseError(detail, response)
+
+        choices = body.get("choices")
+        if not choices:
+            raise LLMResponseError(f"no choices in response: {body!r}"[:300], response)
+        # `usage` carries token counts (prompt/completion/total) on OpenAI-compatible
+        # endpoints; it's optional, so callers must tolerate an empty dict.
+        return choices[0]["message"]["content"] or "", body.get("usage") or {}
+
+    @staticmethod
+    def _no_reasoning(url: str) -> dict:
+        """
+        Request-body fragment that suppresses reasoning tokens on `url`.
+
+        The switch is endpoint-specific: OpenRouter reads a nested `reasoning`
+        object, while vLLM toggles Qwen thinking through the chat template.
+        Both silently drop unknown top-level keys, so sending the wrong one
+        fails open into a reasoning model rather than erroring.
+        """
+        if "openrouter.ai" in url:
+            return {"reasoning": {"effort": "none", "exclude": True}}
+        return {"chat_template_kwargs": {"enable_thinking": False}}
 
     def _json_schema_payload(
-        self, messages: list[dict], name: str, schema: dict, model: str | None = None
+        self, messages: list[dict], name: str, schema: dict, url: str,
+        model: str | None = None,
     ) -> dict:
         return {
             "model": model or self._vision_model,
             "messages": messages,
             "max_tokens": self._max_tokens,
-            "temperature": 0,
-            "enable_thinking": False,
+            "temperature": self._temperature,
+            **self._no_reasoning(url),
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -140,7 +278,7 @@ class LLMClient:
         frames_by_camera: dict[str, list[tuple[datetime, np.ndarray]]],
         boxes_by_camera: dict[str, list[tuple[int, int, int, int]]],
         verify: bool = False,
-    ) -> tuple[str, list[np.ndarray], dict[str, list[np.ndarray]], list[dict]]:
+    ) -> tuple[str, list[np.ndarray], dict[str, list[np.ndarray]], list[dict], dict]:
         """
         Crop and run LLM analysis on video frames.
 
@@ -157,6 +295,11 @@ class LLMClient:
             list[np.ndarray]: list of sampled frames (camera-major)
             dict[str, list[np.ndarray]]: sampled frames grouped by camera
             list[dict]: list of messages sent to LLM
+            dict: inference stats — `prompt_tokens`, `completion_tokens`,
+                `total_tokens` (token counts, or None when the endpoint omits
+                `usage`) plus `prefill_time` and `generation_time` in seconds
+                (or None when nothing streamed). Generation time is measured via
+                streaming so it excludes the prompt-eval/prefill phase.
         """
         prompt = _ANALYZE_PROMPT_PATH.read_text().format(
             dog_description=self._dog_description
@@ -176,31 +319,49 @@ class LLMClient:
             messages,
             name="dog_analysis",
             schema=_ANALYSIS_SCHEMA,
+            url=url,
             model=model,
         )
 
-        content = self._post(url, headers, payload, timeout=60)
-        return content, sampled_frames, sampled_by_camera, messages
+        if verify:
+            content, usage, timing = self._post(
+                url, headers, payload,
+                timeout=_VERIFY_TIMEOUT, deadline=_VERIFY_TIMEOUT, stream=True,
+            )
+        else:
+            content, usage, timing = self._post(url, headers, payload, timeout=60, stream=True)
+        stats = {
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+            "prefill_time": timing.get("ttft"),
+            "generation_time": timing.get("generation_time"),
+        }
+        return content, sampled_frames, sampled_by_camera, messages, stats
 
     def summarize(
         self,
         prompt: str = "",
-        max_tokens: int = 1024,
+        max_tokens: int = 8192,
         model: str | None = None,
         endpoint: str = "fast",
         messages: list[dict] | None = None,
     ) -> str:
         """
-        Summarize a minute's 
+        Summarize a minute's
         """
-        content = self._post(
-            self._fast_url,
-            self._fast_headers,
+        url, headers = {
+            "fast": (self._fast_url, self._fast_headers),
+            "memory": (self._memory_url, self._memory_headers),
+        }[endpoint]
+        content, _ = self._post(
+            url,
+            headers,
             {
                 "model": model or self._vision_model,
                 "messages": messages if messages is not None else [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
-                "enable_thinking": False,
+                **self._no_reasoning(url),
             },
         )
         logger.info("LLM %s: %s", endpoint, content)
@@ -226,11 +387,12 @@ class LLMClient:
             ],
             name="dog_detection",
             schema=_DETECTION_SCHEMA,
+            url=self._vision_url,
         )
 
         def _call() -> set[str]:
             for _ in range(self._DETECT_PARSE_ATTEMPTS):
-                content = self._post(self._vision_url, self._vision_headers, payload)
+                content, _ = self._post(self._vision_url, self._vision_headers, payload)
                 logger.info("LLM detect: %s", content)
                 try:
                     return set(json.loads(extract_json(content)).get("cameras_with_dog", []))
@@ -290,6 +452,9 @@ class LLMClient:
 
     def set_max_tokens(self, max_tokens: int) -> None:
         self._max_tokens = max_tokens
+
+    def set_temperature(self, temperature: float) -> None:
+        self._temperature = temperature
 
 
 ############  Helper functions below  ############
@@ -402,6 +567,8 @@ def _crop(
     y1 = max(0, y1 - pad_y)
     x2 = min(w, x2 + pad_x)
     y2 = min(h, y2 + pad_y)
+    if x2 <= x1 or y2 <= y1:
+        return frame
     return frame[y1:y2, x1:x2]
 
 def _sample(

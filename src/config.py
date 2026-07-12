@@ -20,6 +20,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# How to reduce several dog boxes on one frame to the single region we crop to.
+# "highest" keeps only the best-scoring box; "union" keeps them all, so the crop
+# spans every dog (and every false positive) in frame.
+BOX_SELECTIONS = ("highest", "union")
+
 
 @dataclass
 class StreamConfig:
@@ -46,11 +51,14 @@ class LLMEndpointConfig:
     memory_url: str
     frame_sampling: list[dict]
     detection_window: float
+    analysis_window: float
     crop_padding: float
     max_tokens: int
     cooldown: float
     min_interval: float
     slow_threshold: float
+    max_concurrent: int = 2
+    temperature: float = 0.0
     vision_token: str | None = None
     fast_token: str | None = None
     memory_token: str | None = None
@@ -103,6 +111,10 @@ class Config:
     fallback_detection_enabled: bool
     eval_cap: int
     alert_cap: int = 1000
+    # Ultralytics' own predict default, made explicit so a library upgrade
+    # cannot silently move the detection threshold.
+    yolo_confidence: float = 0.25
+    box_selection: str = "highest"
     double_pass: DoublePassConfig = field(default_factory=DoublePassConfig)
     healthcheck_url: str | None = None
     video_playback_speed: float = 4.0
@@ -112,12 +124,50 @@ class Config:
         self.yolo_model_path = self.yolo_source_model.parent / f"{self.yolo_source_model.stem}_int8_openvino_model"
 
 
+def _validate_windows(raw: dict) -> None:
+    """
+    Check the nesting the frame pipeline depends on:
+    buffer_seconds >= analysis_window >= sum(frame_sampling seconds).
+
+    Violating either bound truncates the oldest sampling tier silently rather
+    than raising, so it is checked here instead.
+    """
+    ep = raw["llm_endpoint"]
+    if "analysis_window" not in ep:
+        raise ValueError(
+            "llm_endpoint.analysis_window is required: seconds of buffered video "
+            "sent to the LLM per call. It was split out of detection_window, "
+            "which now only controls how long a YOLO detection stays active."
+        )
+    analysis_window = ep["analysis_window"]
+    tier_seconds = sum(t["seconds"] for t in ep["frame_sampling"])
+    if tier_seconds > analysis_window:
+        raise ValueError(
+            f"llm_endpoint.frame_sampling covers {tier_seconds}s, which exceeds "
+            f"llm_endpoint.analysis_window ({analysis_window}s); the oldest tier "
+            f"would sample frames that are never fetched"
+        )
+    buffer_seconds = raw["recorder"]["buffer_seconds"]
+    if analysis_window > buffer_seconds:
+        raise ValueError(
+            f"llm_endpoint.analysis_window ({analysis_window}s) exceeds "
+            f"recorder.buffer_seconds ({buffer_seconds}s); the buffer cannot hold "
+            f"the requested clip"
+        )
+
+
 def load_config(path: Path) -> Config:
     """
     Load config from YAML file in `path`.
     """
     with open(path) as f:
         raw = yaml.safe_load(f)
+    box_selection = raw.get("box_selection", "highest")
+    if box_selection not in BOX_SELECTIONS:
+        raise ValueError(
+            f"box_selection must be one of {BOX_SELECTIONS}, got {box_selection!r}"
+        )
+    _validate_windows(raw)
     return Config(
         streams={k: StreamConfig(**v) for k, v in raw["streams"].items()},
         recorder=RecorderConfig(**raw["recorder"]),
@@ -129,6 +179,8 @@ def load_config(path: Path) -> Config:
         yolo_source_model=path.parent / raw["yolo_source_model"],
         yolo_device=raw["yolo_device"],
         yolo_image_size=raw["yolo_image_size"],
+        yolo_confidence=raw.get("yolo_confidence", 0.25),
+        box_selection=box_selection,
         dog_name=raw["dog_name"],
         dog_description=raw["dog_description"],
         no_detection_fallback_seconds=raw["no_detection_fallback_seconds"],
@@ -194,10 +246,11 @@ def watch_config(
             llm_client.set_frame_sampling(ep.frame_sampling)
             llm_client.set_crop_padding(ep.crop_padding)
             llm_client.set_max_tokens(ep.max_tokens)
+            llm_client.set_temperature(ep.temperature)
             logger.info(
-                "Reloaded llm: vision=%s fast=%s memory=%s detection_window=%s crop_padding=%s max_tokens=%s",
+                "Reloaded llm: vision=%s fast=%s memory=%s analysis_window=%s crop_padding=%s max_tokens=%s",
                 ep.vision_model, ep.fast_model, ep.memory_model,
-                ep.detection_window, ep.crop_padding, ep.max_tokens,
+                ep.analysis_window, ep.crop_padding, ep.max_tokens,
             )
 
             memory_querier.set_dog_name(new_config.dog_name)
@@ -206,18 +259,27 @@ def watch_config(
             manager.set_double_pass_enabled(new_config.double_pass.enabled)
             manager.set_cooldown(ep.cooldown)
             manager.set_min_interval(ep.min_interval)
+            manager.set_max_concurrent(ep.max_concurrent)
             manager.set_detection_window(ep.detection_window)
+            manager.set_analysis_window(ep.analysis_window)
             manager.set_slow_threshold(ep.slow_threshold)
             manager.set_no_detection_interval(new_config.no_detection_fallback_seconds)
             logger.info(
-                "Reloaded manager: fallback=%s double_pass=%s cooldown=%s min_interval=%s detection_window=%s slow_threshold=%s no_detection_interval=%s",
+                "Reloaded manager: fallback=%s double_pass=%s cooldown=%s min_interval=%s max_concurrent=%s detection_window=%s analysis_window=%s slow_threshold=%s no_detection_interval=%s",
                 new_config.fallback_detection_enabled, new_config.double_pass.enabled, ep.cooldown, ep.min_interval,
-                ep.detection_window, ep.slow_threshold, new_config.no_detection_fallback_seconds,
+                ep.max_concurrent, ep.detection_window, ep.analysis_window, ep.slow_threshold,
+                new_config.no_detection_fallback_seconds,
             )
 
             for det in detectors.values():
                 det.set_detect_interval(new_config.detect_interval)
-            logger.info("Reloaded detect_interval=%s", new_config.detect_interval)
+                det.set_confidence(new_config.yolo_confidence)
+                det.set_box_selection(new_config.box_selection)
+            logger.info(
+                "Reloaded detect_interval=%s yolo_confidence=%s box_selection=%s",
+                new_config.detect_interval, new_config.yolo_confidence,
+                new_config.box_selection,
+            )
 
             config.camera_stale_threshold = new_config.camera_stale_threshold
         except Exception:

@@ -176,8 +176,15 @@ class Recorder(threading.Thread):
         )
 
     def set_latest_boxes(self, boxes: list[tuple[int, int, int, int]]) -> None:
+        # Keep the last non-empty detection instead of clearing on an empty
+        # result. A clip can trigger while the camera is still "recent" (a dog
+        # was seen within the detection window) even though the most recent YOLO
+        # inference found no dog; retaining the previous boxes means those frames
+        # are still cropped to the dog's last known position rather than sent
+        # full-frame.
         with self._lock:
-            self._latest_boxes = boxes
+            if boxes:
+                self._latest_boxes = boxes
 
     @property
     def latest_boxes(self) -> list[tuple[int, int, int, int]]:

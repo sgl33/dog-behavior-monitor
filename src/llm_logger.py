@@ -305,6 +305,8 @@ class LLMOutputLogger:
     def read_summary_records(self, cutoff_date, cutoff_hhmm: str) -> list[SummaryRecord]:
         records: list[SummaryRecord] = []
         for filepath in sorted(self._dir.glob("*.jsonl")):
+            if filepath == self._buffer_path:
+                continue
             try:
                 file_date = datetime.strptime(filepath.stem, "%Y-%m-%d").date()
                 if file_date < cutoff_date:

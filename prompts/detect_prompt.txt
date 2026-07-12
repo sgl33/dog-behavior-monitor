@@ -19,7 +19,7 @@ Checks to apply:
 - Partial visibility counts: if only part of the dog is visible (e.g., tail or back half at the frame edge) but you are confident it is the target dog, include that camera.
 
 PRECISION RULE
-Only include cameras where you are confident. If you are unsure whether something is the dog, leave that camera out. An empty list is a correct and expected answer when the dog is not clearly visible anywhere.
+Only include cameras where you are confident. If you are unsure whether something is the dog, leave that camera out. An empty list is a correct and expected answer when the dog is not clearly visible anywhere. List up to 3 cameras; if you are confident that there are more than 3, list the 3 cameras that you are most confident.
 
 OUTPUT
 Reply with JSON only, no other text:

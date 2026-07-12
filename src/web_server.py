@@ -65,6 +65,10 @@ class WebServerClient:
         detected_by: str | None = None,
         double_pass: bool = False,
         clip_frames_by_camera: dict[str, list[np.ndarray]] | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        prefill_time: float | None = None,
+        generation_time: float | None = None,
     ) -> None:
         """
         Push a single behavioral analysis result to the web server via HTTP.
@@ -81,6 +85,12 @@ class WebServerClient:
             cameras (list[str] | None): List of camera names.
             detected_by (str | None): "YOLO" or "LLM"
             double_pass (bool): Whether this result is from a second pass.
+            input_tokens (int | None): Prompt token count for the inference.
+            output_tokens (int | None): Completion token count for the inference.
+            prefill_time (float | None): Time-to-first-token in seconds (approx.
+                the prompt-eval/prefill phase).
+            generation_time (float | None): Seconds spent generating output
+                tokens (first token to last), excluding prefill.
             clip_frames_by_camera (dict[str, list[np.ndarray]] | None): Sampled
                 frames grouped by camera. Each camera is compiled into its own
                 MP4 so the user gets one clip per source. The web server keeps
@@ -127,6 +137,10 @@ class WebServerClient:
                     "cameras": cameras,
                     "detected_by": detected_by,
                     "double_pass": double_pass,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "prefill_time": prefill_time,
+                    "generation_time": generation_time,
                 },
                 timeout=5,
             ).raise_for_status()

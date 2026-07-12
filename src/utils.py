@@ -40,6 +40,24 @@ _JPEG_QUALITY = 85
 VIDEO_SIZE = (960, 540)
 
 
+def select_boxes(
+    scored: list[tuple[tuple[int, int, int, int], float]],
+    selection: str,
+) -> list[tuple[int, int, int, int]]:
+    """
+    Reduce one frame's scored dog boxes to the region the crop should span.
+
+    `scored` pairs each box with the YOLO confidence to rank it by.
+
+    "highest" keeps only the best-scoring box. "union" keeps them all, and
+    `_crop` then spans them with a single bounding box, so one false positive
+    across the room widens the crop to cover both it and the dog.
+    """
+    if not scored or selection == "union":
+        return [box for box, _ in scored]
+    return [max(scored, key=lambda item: item[1])[0]]
+
+
 def encode_frame(frame: np.ndarray) -> str:
     """
     Encode a single frame to base64 in JPG. If the frame is larger than 

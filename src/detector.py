@@ -10,6 +10,7 @@ from config import Config
 from recorder import Recorder
 from state import DogDetectionState
 from telegram import TelegramClient
+from utils import select_boxes
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,8 @@ class Detector(threading.Thread):
         self._model_lock = model_lock
         self._device = config.yolo_device
         self._image_size = config.yolo_image_size
+        self._confidence = config.yolo_confidence
+        self._box_selection = config.box_selection
         self._telegram_client = telegram_client
         self._stop_event = threading.Event()
         self._lag_monitor = lag_monitor
@@ -149,22 +152,37 @@ class Detector(threading.Thread):
         """
         with self._model_lock:
             results = self._model.predict(
-                frame, device=self._device,
+                frame, device=self._device, conf=self._confidence,
                 imgsz=self._image_size, half=True, verbose=False
             )
         boxes = results[0].boxes
-        dog_boxes = [
-            (int(x1), int(y1), int(x2), int(y2))
-            for (x1, y1, x2, y2), cls 
-            in zip(boxes.xyxy.tolist(), boxes.cls.tolist())
+        scored_dogs = [
+            ((int(x1), int(y1), int(x2), int(y2)), conf)
+            for (x1, y1, x2, y2), cls, conf
+            in zip(boxes.xyxy.tolist(), boxes.cls.tolist(), boxes.conf.tolist())
             if int(cls) == _DOG_CLASS_ID
         ]
+
+        # TEMP: log confidence of each dog detection this frame
+        if scored_dogs:
+            logger.info(
+                "[%s] YOLO dog conf: %s",
+                self.camera, ", ".join(f"{conf:.3f}" for _, conf in scored_dogs),
+            )
+
+        dog_boxes = select_boxes(scored_dogs, self._box_selection)
         self._recorder.set_latest_boxes(dog_boxes)
         if dog_boxes:
             self._state.update(self.camera)
 
     def set_detect_interval(self, interval: float) -> None:
         self._detect_interval = interval
+
+    def set_confidence(self, confidence: float) -> None:
+        self._confidence = confidence
+
+    def set_box_selection(self, selection: str) -> None:
+        self._box_selection = selection
 
     def stop(self) -> None:
         self._stop_event.set()

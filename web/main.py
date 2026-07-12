@@ -63,6 +63,10 @@ class PushPayload(BaseModel):
     cameras: list[str] | None = None
     detected_by: str | None = None
     double_pass: bool = False
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    prefill_time: float | None = None
+    generation_time: float | None = None
 
 
 class CameraInfo(BaseModel):

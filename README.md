@@ -19,7 +19,6 @@ This is a personal project for detecting dog behavior using RTSP-supported home 
     - Vast configuration options (`config.yaml`)
     - Fully customizable LLM prompts (`prompts/*.txt`)
     - Automatically saves video files and data for model evaluation or training
-    - Easy to understand open-source code
 
 ## Usage
 
@@ -91,4 +90,4 @@ Basically the following loop repeats forever:
 
 ### License
 
-GNU General Public License (GPL)
+PolyForm Noncommercial 1.0.0

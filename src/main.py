@@ -88,6 +88,7 @@ def init_yolo(config: Config) -> YOLO:
     model.predict(
         np.zeros((config.yolo_image_size, config.yolo_image_size, 3), dtype=np.uint8),
         device=config.yolo_device,
+        conf=config.yolo_confidence,
         imgsz=config.yolo_image_size,
         half=True,
         verbose=False,

@@ -3,6 +3,8 @@ You decide how much history is needed to answer a question about a dog's recent 
 Current local time: {now}
 Maximum available history: {max_minutes} minutes.
 
+Question: {question}
+
 Given the question, reply with the number of minutes of history (counting back from now) needed to answer it well.
 
 Guidelines:

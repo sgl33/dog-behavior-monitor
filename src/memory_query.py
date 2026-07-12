@@ -58,8 +58,9 @@ class MemoryQuerier:
         """
         max_minutes = self._store.retention_hours * 60
         try:
+            now_str = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
             prompt = _TRIAGE_PROMPT_PATH.read_text().format(
-                max_minutes=max_minutes, question=question
+                max_minutes=max_minutes, now=now_str, question=question
             )
             raw = self._llm_client.summarize(prompt, model=self._llm_client.fast_model, max_tokens=1024)
             match = re.search(r"\d+", raw or "")

@@ -39,6 +39,7 @@ class RecorderConfig:
     offline_alert_seconds: float
     stale_stream_seconds: float
     recovery_seconds: float = 10.0
+    buffer_jpeg_quality: int = 90
 
 
 @dataclass

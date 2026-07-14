@@ -45,7 +45,8 @@ class Recorder(threading.Thread):
         self._offline_alert_seconds = config.offline_alert_seconds
         self._stale_stream_seconds = config.stale_stream_seconds
         self._recovery_seconds = config.recovery_seconds
-        self._buffer: deque[tuple[datetime, np.ndarray]] = deque(maxlen=config.fps * config.buffer_seconds)
+        self._jpeg_quality = config.buffer_jpeg_quality
+        self._buffer: deque[tuple[datetime, bytes]] = deque(maxlen=config.fps * config.buffer_seconds)
         self._lock = threading.Lock()
         self._latest_boxes: list[tuple[int, int, int, int]] = []
         self._stop_event = threading.Event()
@@ -129,13 +130,21 @@ class Recorder(threading.Thread):
         return got_frame
 
     def _store_frame(self, frame: np.ndarray) -> None:
-        # Copy outside the lock — the full-frame memcpy is non-trivial and frame
-        # is thread-local, so only the append needs guarding. JPEG encoding is
-        # deferred to sampling time (see _build_frame_content): every frame here
-        # is buffered but only the handful actually sent to the LLM get encoded.
-        item = (datetime.now(), frame.copy())
+        # Encode outside the lock — imencode is non-trivial and frame is
+        # thread-local, so only the append needs guarding.
+        ok, buf = cv2.imencode(
+            ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_quality]
+        )
+        if not ok:
+            logger.warning("%s: failed to JPEG-encode frame, dropping", self.camera)
+            return
+        item = (datetime.now(), buf.tobytes())
         with self._lock:
             self._buffer.append(item)
+
+    @staticmethod
+    def _decode(data: bytes) -> np.ndarray:
+        return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
 
     def _update_recovery(self, now: float, prev_good_mono: float) -> None:
         """While offline, watch for a sustained run of frames before declaring
@@ -197,7 +206,8 @@ class Recorder(threading.Thread):
 
     def get_latest_frame(self) -> np.ndarray | None:
         with self._lock:
-            return self._buffer[-1][1] if self._buffer else None
+            data = self._buffer[-1][1] if self._buffer else None
+        return self._decode(data) if data is not None else None
 
     def get_frames(
         self, last_seconds: float
@@ -207,10 +217,11 @@ class Recorder(threading.Thread):
         """
         cutoff = datetime.now()
         with self._lock:
-            return [
+            selected = [
                 item for item in self._buffer
                 if (cutoff - item[0]).total_seconds() <= last_seconds
             ]
+        return [(ts, self._decode(data)) for ts, data in selected]
 
     def stop(self) -> None:
         self._stop_event.set()

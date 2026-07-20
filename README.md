@@ -24,10 +24,10 @@ This is a personal project for detecting dog behavior using RTSP-supported home 
 
 Initial setup will only take 5-10 minutes, but hours of testing and fine-tuning is recommended before using it in "production". See [USAGE.md](USAGE.md) for details.
 
-
 ### Requirements/Prerequisites
 
 - The server should be running Ubuntu 22.04 or later on an x86-64 CPU.
+    - For 9 configured cameras, you will need 8-10 GB of free memory for the default configuration.
 - You must have access to a locally-hosted OpenAI-compatible API endpoint. 
     - [vLLM](https://vllm.ai/) is recommended for maximum performance, but other apps such as [Ollama](https://ollama.com/) or [LM Studio](https://lmstudio.ai/) can also be used.
 - Your server must be running [go2rtc](https://github.com/AlexxIT/go2rtc) or similar to forward RTSP streams locally.
@@ -39,12 +39,6 @@ Initial setup will only take 5-10 minutes, but hours of testing and fine-tuning 
 You should never use this as a primary supervision method for your dog; it's best if you use it as a backup tool. Expect lots of false negatives and false positives until you fine-tune the prompt and config, and even then, some of them will be inevitable due to the inherent limitations of AI and cameras.
 
 ### Disclaimer
-
-This project was tested on the following hardware for eight (8) 2K cameras:
-- **CPU**: Intel Core i5-10210U, AMD Ryzen 3900X
-- **GPU - YOLO**: Intel UHD Graphics, NVIDIA RTX 5070 Ti (shared with LLM)
-- **GPU - LLM**: RTX 5090, RTX 5070 Ti using vLLM
-- **RAM**: DDR4-2666 32GB, DDR4-3600 32GB
 
 This *personal* project has not been tested with other devices and might not work for your hardware out-of-the-box. You may need to modify the source code for this to work on your device; do it at your own risk.
 

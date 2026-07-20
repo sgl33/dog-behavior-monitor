@@ -59,7 +59,10 @@ class LLMEndpointConfig:
     min_interval: float
     slow_threshold: float
     max_concurrent: int = 2
+    max_frame_width: int = 640
+    max_frame_height: int = 360
     temperature: float = 0.0
+    reasoning_budget: int = 0
     vision_token: str | None = None
     fast_token: str | None = None
     memory_token: str | None = None
@@ -246,12 +249,15 @@ def watch_config(
             llm_client.set_dog_description(new_config.dog_description)
             llm_client.set_frame_sampling(ep.frame_sampling)
             llm_client.set_crop_padding(ep.crop_padding)
+            llm_client.set_max_frame_size(ep.max_frame_width, ep.max_frame_height)
             llm_client.set_max_tokens(ep.max_tokens)
             llm_client.set_temperature(ep.temperature)
+            llm_client.set_reasoning_budget(ep.reasoning_budget)
             logger.info(
-                "Reloaded llm: vision=%s fast=%s memory=%s analysis_window=%s crop_padding=%s max_tokens=%s",
+                "Reloaded llm: vision=%s fast=%s memory=%s analysis_window=%s crop_padding=%s max_frame=%sx%s max_tokens=%s reasoning_budget=%s",
                 ep.vision_model, ep.fast_model, ep.memory_model,
-                ep.analysis_window, ep.crop_padding, ep.max_tokens,
+                ep.analysis_window, ep.crop_padding, ep.max_frame_width, ep.max_frame_height,
+                ep.max_tokens, ep.reasoning_budget,
             )
 
             memory_querier.set_dog_name(new_config.dog_name)

@@ -47,11 +47,19 @@ _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 _ANALYZE_PROMPT_PATH = _PROMPTS_DIR / "analyze_prompt.txt"
 _DETECT_PROMPT_PATH = _PROMPTS_DIR / "detect_prompt.txt"
 
+# Seeded into the think block (via continue_final_message) to prime terse,
+# on-task Chinese reasoning. `<think>\n` is a control prefix stripped from display.
+_REASONING_SEED_VISIBLE = "位置:"
+_REASONING_SEED_OPEN = "<think>\n" + _REASONING_SEED_VISIBLE
+
+# Printable-ASCII pattern forces English output at the grammar level, so Chinese
+# reasoning can't bleed into the answer fields.
+_ASCII = "^[ -~]+$"
 _ANALYSIS_SCHEMA = {
     "type": "object",
     "properties": {
-        "description": {"type": "string"},
-        "summary": {"type": "string"},
+        "description": {"type": "string", "pattern": _ASCII},
+        "summary": {"type": "string", "pattern": _ASCII},
         "score": {"type": "integer", "minimum": 0, "maximum": 10},
     },
     "required": ["description", "summary", "score"],
@@ -73,6 +81,7 @@ _DETECTION_SCHEMA = {
 
 class LLMClient:
     _DETECT_PARSE_ATTEMPTS = 3
+    _ANALYZE_PARSE_ATTEMPTS = 2
 
     def __init__(
         self,
@@ -88,8 +97,11 @@ class LLMClient:
         self._dog_description = dog_description
         self._frame_sampling = [(t["seconds"], t["fps"]) for t in config.frame_sampling]
         self._crop_padding = config.crop_padding
+        self._max_frame_width = config.max_frame_width
+        self._max_frame_height = config.max_frame_height
         self._max_tokens = config.max_tokens
         self._temperature = config.temperature
+        self._reasoning_budget = config.reasoning_budget
         self._vision_url, self._vision_headers = self._endpoint(config.vision_url, config.vision_token)
         self._fast_url, self._fast_headers = self._endpoint(config.fast_url, config.fast_token)
         self._memory_url, self._memory_headers = self._endpoint(config.memory_url, config.memory_token)
@@ -162,6 +174,8 @@ class LLMClient:
         first_token_at: float | None = None
         last_token_at: float | None = None
         parts: list[str] = []
+        reasoning_parts: list[str] = []
+        reasoning_token_count = 0
         usage: dict = {}
         with requests.post(
             url, headers=headers, json=body, stream=True,
@@ -188,12 +202,28 @@ class LLMClient:
                 if chunk.get("usage"):
                     usage = chunk["usage"]
                 for choice in chunk.get("choices") or []:
-                    piece = (choice.get("delta") or {}).get("content")
-                    if piece:
+                    delta = choice.get("delta") or {}
+                    # A reasoning parser (vLLM --reasoning-parser) streams the
+                    # thinking trace separately from the final answer `content`.
+                    # The field name varies: this vLLM build and OpenRouter use
+                    # `reasoning`; older vLLM used `reasoning_content`. Advance the
+                    # token clock on either kind so generation_time covers the full
+                    # decode (reasoning + answer) rather than the answer alone —
+                    # otherwise the reasoning time lands in ttft/prefill and the
+                    # phases stop reconciling with the total.
+                    reasoning_piece = delta.get("reasoning") or delta.get("reasoning_content")
+                    piece = delta.get("content")
+                    if reasoning_piece or piece:
                         now = time.monotonic()
                         if first_token_at is None:
                             first_token_at = now
                         last_token_at = now
+                    if reasoning_piece:
+                        reasoning_parts.append(reasoning_piece)
+                        # Streamed one delta per token; count them so the UI can
+                        # show reasoning's share when `usage` omits the breakdown.
+                        reasoning_token_count += 1
+                    if piece:
                         parts.append(piece)
         timing = {
             "ttft": (first_token_at - start) if first_token_at is not None else None,
@@ -202,6 +232,8 @@ class LLMClient:
                 if first_token_at is not None and last_token_at is not None
                 else None
             ),
+            "reasoning": "".join(reasoning_parts) or None,
+            "reasoning_tokens": reasoning_token_count or None,
         }
         return "".join(parts), usage, timing
 
@@ -253,16 +285,47 @@ class LLMClient:
             return {"reasoning": {"effort": "none", "exclude": True}}
         return {"chat_template_kwargs": {"enable_thinking": False}}
 
+    def _reasoning_params(self, url: str) -> dict:
+        """
+        Request-body fragment enabling bounded reasoning on `url`.
+
+        A budget of 0 (or less) disables reasoning entirely, delegating to
+        `_no_reasoning`. Otherwise a hard thinking-token cap is applied: vLLM
+        enforces it natively via the top-level `thinking_token_budget` sampling
+        param (which requires the server's `--reasoning-parser`, forcing `</think>`
+        at the budget), while OpenRouter caps reasoning via nested
+        `reasoning.max_tokens`. Endpoints silently drop the key that doesn't
+        apply, so the wrong one fails open rather than erroring.
+        """
+        if self._reasoning_budget <= 0:
+            return self._no_reasoning(url)
+        if "openrouter.ai" in url:
+            return {"reasoning": {"max_tokens": self._reasoning_budget}}
+        return {
+            "chat_template_kwargs": {"enable_thinking": True},
+            "thinking_token_budget": self._reasoning_budget,
+        }
+
+    @staticmethod
+    def _seeds_thinking(reasoning: bool, url: str) -> bool:
+        # continue_final_message priming is a vLLM feature; skip it on OpenRouter.
+        return reasoning and "openrouter.ai" not in url
+
     def _json_schema_payload(
         self, messages: list[dict], name: str, schema: dict, url: str,
-        model: str | None = None,
+        model: str | None = None, reasoning: bool = False,
     ) -> dict:
+        seed: dict = {}
+        if self._seeds_thinking(reasoning, url):
+            messages = messages + [{"role": "assistant", "content": _REASONING_SEED_OPEN}]
+            seed = {"continue_final_message": True, "add_generation_prompt": False}
         return {
             "model": model or self._vision_model,
             "messages": messages,
             "max_tokens": self._max_tokens,
             "temperature": self._temperature,
-            **self._no_reasoning(url),
+            **(self._reasoning_params(url) if reasoning else self._no_reasoning(url)),
+            **seed,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -299,14 +362,17 @@ class LLMClient:
                 `total_tokens` (token counts, or None when the endpoint omits
                 `usage`) plus `prefill_time` and `generation_time` in seconds
                 (or None when nothing streamed). Generation time is measured via
-                streaming so it excludes the prompt-eval/prefill phase.
+                streaming so it excludes the prompt-eval/prefill phase. Also
+                `reasoning`: the model's thinking trace when reasoning is on
+                (None otherwise).
         """
         prompt = _ANALYZE_PROMPT_PATH.read_text().format(
             dog_description=self._dog_description
         )
         content, sampled_frames, sampled_by_camera = _build_frame_content(
             frames_by_camera, boxes_by_camera,
-            self._frame_sampling, self._crop_padding
+            self._frame_sampling, self._crop_padding,
+            self._max_frame_width, self._max_frame_height,
         )
         messages = [
             {"role": "system", "content": prompt},
@@ -321,21 +387,40 @@ class LLMClient:
             schema=_ANALYSIS_SCHEMA,
             url=url,
             model=model,
+            reasoning=self._reasoning_budget > 0,
         )
 
-        if verify:
+        # Retry the main pass when the model returns no JSON (a thinking model
+        # rarely emits only reasoning); verify is single-shot since its failure
+        # just falls back to pass 1.
+        timeout = _VERIFY_TIMEOUT if verify else 60
+        deadline = _VERIFY_TIMEOUT if verify else None
+        attempts = 1 if verify else self._ANALYZE_PARSE_ATTEMPTS
+        for attempt in range(attempts):
             content, usage, timing = self._post(
-                url, headers, payload,
-                timeout=_VERIFY_TIMEOUT, deadline=_VERIFY_TIMEOUT, stream=True,
+                url, headers, payload, timeout=timeout, deadline=deadline, stream=True,
             )
-        else:
-            content, usage, timing = self._post(url, headers, payload, timeout=60, stream=True)
+            if extract_json(content).lstrip().startswith("{"):
+                break
+            if attempt + 1 < attempts:
+                logger.warning("Analyze returned no JSON, retrying (%d/%d)", attempt + 1, attempts)
+        reasoning = timing.get("reasoning")
+        if reasoning and self._seeds_thinking(self._reasoning_budget > 0, url):
+            reasoning = _REASONING_SEED_VISIBLE + reasoning
         stats = {
             "prompt_tokens": usage.get("prompt_tokens"),
             "completion_tokens": usage.get("completion_tokens"),
             "total_tokens": usage.get("total_tokens"),
             "prefill_time": timing.get("ttft"),
             "generation_time": timing.get("generation_time"),
+            "reasoning": reasoning,
+            # Reasoning is part of the decode phase, so `completion_tokens`
+            # already includes it; this is just the reasoning share. Prefer the
+            # endpoint's own breakdown, falling back to the count of streamed
+            # reasoning deltas when `usage` omits it (as this vLLM build does).
+            "reasoning_tokens": (usage.get("completion_tokens_details") or {}).get(
+                "reasoning_tokens"
+            ) or timing.get("reasoning_tokens"),
         }
         return content, sampled_frames, sampled_by_camera, messages, stats
 
@@ -378,7 +463,7 @@ class LLMClient:
             content.append({"type": "text", "text": camera})
             content.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{encode_frame(frame)}"},
+                "image_url": {"url": f"data:image/jpeg;base64,{encode_frame(frame, self._max_frame_width, self._max_frame_height)}"},
             })
         payload = self._json_schema_payload(
             [
@@ -450,11 +535,18 @@ class LLMClient:
     def set_crop_padding(self, padding: float) -> None:
         self._crop_padding = padding
 
+    def set_max_frame_size(self, width: int, height: int) -> None:
+        self._max_frame_width = width
+        self._max_frame_height = height
+
     def set_max_tokens(self, max_tokens: int) -> None:
         self._max_tokens = max_tokens
 
     def set_temperature(self, temperature: float) -> None:
         self._temperature = temperature
+
+    def set_reasoning_budget(self, reasoning_budget: int) -> None:
+        self._reasoning_budget = reasoning_budget
 
 
 ############  Helper functions below  ############
@@ -481,6 +573,8 @@ def _build_frame_content(
     boxes_by_camera: dict[str, list[tuple[int, int, int, int]]],
     frame_sampling: list[tuple[float, float]],
     crop_padding: float,
+    max_frame_width: int,
+    max_frame_height: int,
 ) -> tuple[list[dict], list[np.ndarray], dict[str, list[np.ndarray]]]:
     """
     Build LLM message content and the matching sampled frames from camera frames.
@@ -528,7 +622,7 @@ def _build_frame_content(
             content.append({"type": "text", "text": camera})
             content.append({
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{encode_frame(display)}"},
+                "image_url": {"url": f"data:image/jpeg;base64,{encode_frame(display, max_frame_width, max_frame_height)}"},
             })
 
     for ts, camera, display in pooled:

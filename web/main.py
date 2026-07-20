@@ -67,6 +67,8 @@ class PushPayload(BaseModel):
     output_tokens: int | None = None
     prefill_time: float | None = None
     generation_time: float | None = None
+    reasoning: str | None = None
+    reasoning_tokens: int | None = None
 
 
 class CameraInfo(BaseModel):

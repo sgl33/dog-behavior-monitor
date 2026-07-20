@@ -61,7 +61,6 @@ class Manager(threading.Thread):
         self._llm_error = False
         self._llm_consecutive_errors = 0
         self._last_result: tuple[int, str, datetime] | None = None
-        self._last_frames: list[np.ndarray] | None = None
         self._stop_event = threading.Event()
 
     def run(self) -> None:
@@ -188,17 +187,33 @@ class Manager(threading.Thread):
                 return
             logger.info("LLM inference started")
 
-            # Run LLM inference
+            # Run LLM inference (pass 1)
             response, frames, frames_by_camera_sampled, messages, stats = self._llm_client.analyze(frames_by_camera, boxes_by_camera)
             self._last_llm_inference_latency = time.monotonic() - trigger_time
             self._check_inference_slow(self._last_llm_inference_latency)
-            parsed = json.loads(extract_json(response))
+            try:
+                parsed = json.loads(extract_json(response))
+            except json.JSONDecodeError:
+                logger.warning("LLM returned no parseable JSON, skipping this result")
+                return
             score, summary, description = parsed["score"], parsed["summary"], parsed["description"]
             logger.info("LLM result (pass 1): %d - %s (%.2fs)", score, description, self._last_llm_inference_latency)
+
+            # Snapshot the pass 1 result so it can be shown as its own web feed
+            # entry even after the verify pass overwrites the working variables.
+            pass1 = {
+                "score": score,
+                "summary": summary,
+                "description": description,
+                "frames_by_camera_sampled": frames_by_camera_sampled,
+                "inference_time": self._last_llm_inference_latency,
+                "stats": stats,
+            }
 
             # If above global threshold, re-run it to reduce false positives
             double_pass = False
             verify_failed = False
+            pass2_latency: float | None = None
             if self._double_pass_enabled and score >= self._alert_threshold:
                 logger.info(
                     "Score %d >= threshold %d, running second pass to verify",
@@ -226,18 +241,20 @@ class Manager(threading.Thread):
                 # must not swallow a pass 1 detection: keep pass 1's result and
                 # alert on it, flagged as unverified.
                 try:
-                    # The displayed inference_time covers pass 1 only, so we keep
-                    # pass 1's token/timing stats for the throughput figures and
-                    # discard the verify pass's.
-                    response2, frames2, frames_by_camera_sampled2, messages2, _ = self._llm_client.analyze(
+                    # Pass 1 and pass 2 are shown as separate web feed entries,
+                    # so time the verify pass and carry its own token/timing
+                    # stats through for the pass 2 card.
+                    verify_start = time.monotonic()
+                    response2, frames2, frames_by_camera_sampled2, messages2, stats2 = self._llm_client.analyze(
                         verify_frames_by_camera, verify_boxes_by_camera, verify=True
                     )
+                    pass2_latency = time.monotonic() - verify_start
                     parsed2 = json.loads(extract_json(response2))
                     score, summary, description = parsed2["score"], parsed2["summary"], parsed2["description"]
-                    frames, messages = frames2, messages2
+                    frames, messages, stats = frames2, messages2, stats2
                     frames_by_camera_sampled = frames_by_camera_sampled2
                     double_pass = True
-                    logger.info("LLM result (pass 2): %d - %s", score, description)
+                    logger.info("LLM result (pass 2): %d - %s (%.2fs)", score, description, pass2_latency)
                 except Exception:
                     verify_failed = True
                     logger.exception(
@@ -247,30 +264,27 @@ class Manager(threading.Thread):
 
             result_time = datetime.now().astimezone()
             self._last_result = (score, description, result_time)
-            self._last_frames = frames
             self._last_llm_finish_time = time.monotonic()
             self._last_llm_finish_wall_time = result_time
 
-            # Push result to web server, logger, and eval clip saver.
-            # Send only the most recent frame from each camera for display.
-            # Use the cropped sampled frames (same ones compiled into the clips)
-            # so the thumbnails match the clip and are cropped to the dog rather
-            # than showing the full raw frame.
+            # Push result(s) to web server, logger, and eval clip saver.
             if self._web_server is not None:
-                web_frames = [
-                    cam_frames[-1]
-                    for cam_frames in frames_by_camera_sampled.values()
-                    if cam_frames
-                ]
-                self._web_server.push_result(
-                    score, summary, description, result_time, web_frames,
-                    self._last_llm_inference_latency,
-                    list(frames_by_camera.keys()), detected_by, double_pass,
-                    clip_frames_by_camera=frames_by_camera_sampled,
-                    input_tokens=stats.get("prompt_tokens"),
-                    output_tokens=stats.get("completion_tokens"),
-                    prefill_time=stats.get("prefill_time"),
-                    generation_time=stats.get("generation_time"),
+                cameras = list(frames_by_camera.keys())
+                # On a successful double pass, show pass 1 as its own entry
+                # (no asterisk) followed by the pass 2 entry (asterisk). Pushing
+                # pass 1 first lands the pass 2 card on top of the feed.
+                if double_pass:
+                    self._push_web_result(
+                        pass1["score"], pass1["summary"], pass1["description"],
+                        result_time, pass1["frames_by_camera_sampled"],
+                        pass1["inference_time"], cameras, detected_by,
+                        double_pass=False, stats=pass1["stats"],
+                    )
+                self._push_web_result(
+                    score, summary, description, result_time,
+                    frames_by_camera_sampled,
+                    pass2_latency if double_pass else self._last_llm_inference_latency,
+                    cameras, detected_by, double_pass, stats,
                 )
             if self._eval_saver is not None:
                 self._eval_saver.save_alert(score, messages, frames)
@@ -288,6 +302,44 @@ class Manager(threading.Thread):
             self._handle_llm_error(e)
             self._last_llm_finish_time = time.monotonic()
             self._last_llm_finish_wall_time = datetime.now().astimezone()
+
+    def _push_web_result(
+        self,
+        score: int,
+        summary: str,
+        description: str,
+        result_time: datetime,
+        frames_by_camera_sampled: dict[str, list[np.ndarray]],
+        inference_time: float | None,
+        cameras: list[str],
+        detected_by: str,
+        double_pass: bool,
+        stats: dict,
+    ) -> None:
+        """
+        Push one analysis pass to the web server as a feed entry.
+
+        Send only the most recent frame from each camera for the thumbnail. Use
+        the cropped sampled frames (the same ones compiled into the clips) so the
+        thumbnails match the clip and are cropped to the dog rather than showing
+        the full raw frame.
+        """
+        web_frames = [
+            cam_frames[-1]
+            for cam_frames in frames_by_camera_sampled.values()
+            if cam_frames
+        ]
+        self._web_server.push_result(
+            score, summary, description, result_time, web_frames,
+            inference_time, cameras, detected_by, double_pass,
+            clip_frames_by_camera=frames_by_camera_sampled,
+            input_tokens=stats.get("prompt_tokens"),
+            output_tokens=stats.get("completion_tokens"),
+            prefill_time=stats.get("prefill_time"),
+            generation_time=stats.get("generation_time"),
+            reasoning=stats.get("reasoning"),
+            reasoning_tokens=stats.get("reasoning_tokens"),
+        )
 
     def _check_inference_slow(self, latency: float) -> None:
         """
@@ -351,10 +403,6 @@ class Manager(threading.Thread):
     @property
     def last_result(self) -> tuple[int, str, datetime] | None:
         return self._last_result
-
-    @property
-    def last_frames(self) -> list[np.ndarray] | None:
-        return self._last_frames
 
     @property
     def llm_enabled(self) -> bool:

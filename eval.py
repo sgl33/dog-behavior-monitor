@@ -20,6 +20,29 @@ import requests
 import yaml
 
 
+def _reasoning_fragment(base_url: str, budget: int | None) -> dict:
+    """Request-body fragment controlling reasoning, mirroring LLMClient.
+
+    `budget is None` suppresses reasoning (the default, matching _no_reasoning).
+    `budget == 0` enables reasoning with no cap; a positive `budget` applies a
+    hard thinking-token cap. The switch is endpoint-specific — OpenRouter reads a
+    nested `reasoning` object, vLLM reads `chat_template_kwargs` plus a top-level
+    `thinking_token_budget` — and each endpoint ignores the key that doesn't
+    apply rather than erroring, so the wrong one fails open.
+    """
+    is_openrouter = "openrouter.ai" in base_url
+    if budget is None:
+        if is_openrouter:
+            return {"reasoning": {"effort": "none", "exclude": True}}
+        return {"chat_template_kwargs": {"enable_thinking": False}}
+    if is_openrouter:
+        return {"reasoning": {"max_tokens": budget} if budget > 0 else {"enabled": True}}
+    fragment: dict = {"chat_template_kwargs": {"enable_thinking": True}}
+    if budget > 0:
+        fragment["thinking_token_budget"] = budget
+    return fragment
+
+
 def _build_payload(user_content: list[dict], config: dict, args: argparse.Namespace) -> tuple[dict, dict, str]:
     llm = config.get("llm_endpoint", {})
     base_url = (args.url or llm.get("vision_url", "http://localhost:8000/v1")).rstrip("/")
@@ -36,13 +59,7 @@ def _build_payload(user_content: list[dict], config: dict, args: argparse.Namesp
         "model": model,
         "messages": messages,
         "max_tokens": args.max_tokens or llm.get("max_tokens", 1024),
-        # Mirrors LLMClient._no_reasoning: the switch differs per endpoint, and
-        # both ignore unknown top-level keys rather than erroring.
-        **(
-            {"reasoning": {"effort": "none", "exclude": True}}
-            if "openrouter.ai" in base_url
-            else {"chat_template_kwargs": {"enable_thinking": False}}
-        ),
+        **_reasoning_fragment(base_url, args.reasoning),
         "response_format": {
             "type": "json_schema",
             "json_schema": {
@@ -179,6 +196,10 @@ def main() -> None:
     parser.add_argument("--model", help="Override model name")
     parser.add_argument("--token", help="Override bearer token")
     parser.add_argument("--max-tokens", type=int, help="Override max_tokens")
+    parser.add_argument(
+        "--reasoning", nargs="?", type=int, const=0, default=None, metavar="TOKEN_BUDGET",
+        help="Enable reasoning; optionally cap the thinking trace at TOKEN_BUDGET tokens (omit the value for no cap)",
+    )
     parser.add_argument("--watch", action="store_true", help="Loop forever, processing new JSON files as they appear (requires a directory)")
     parser.add_argument("--all", dest="run_all", action="store_true", help="Process all files, ignoring previously evaluated ones")
     args = parser.parse_args()

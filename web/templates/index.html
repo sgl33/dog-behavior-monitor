@@ -100,12 +100,30 @@ h1 { font-size: 15px; font-weight: 600; }
 .tokens.open { display: grid; }
 .tok-v { color: #c9d1d9; font-variant-numeric: tabular-nums; text-align: right; }
 .tok-v .rate { color: #6e7681; }
+/* Reasoning-trace toggle, sitting inline at the end of the description
+   sentence. Muted grey to match the UI, turning active-blue when open like the
+   info button. `display: inline` so it flows as text within the line-clamped
+   description rather than disrupting the -webkit-box layout. */
+.reason-btn {
+  display: inline; background: none; border: none; padding: 0; margin-left: 6px;
+  color: #6e7681; cursor: pointer; font-size: 16px; line-height: 1;
+  vertical-align: -1px; transition: color 0.15s;
+}
+.reason-btn:hover { color: #c9d1d9; }
+.reason-btn.open { color: #58a6ff; }
+.reasoning {
+  display: none; margin: 4px 0 2px;
+  border: 1px solid #30363d; border-radius: 6px;
+  background: #0d1117; padding: 6px 9px;
+  font-size: 11px; color: #8b949e; line-height: 1.45;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 260px; overflow-y: auto;
+}
+.reasoning.open { display: block; }
 .summary { font-size: 13px; color: #c9d1d9; font-weight: 500; margin-bottom: 2px; }
 .detect { font-size: 11px; color: #6e7681; margin-bottom: 3px; }
 .desc {
   font-size: 13px; color: #8b949e; line-height: 1.4;
-  overflow: hidden; display: -webkit-box;
-  -webkit-line-clamp: 3; -webkit-box-orient: vertical;
 }
 .empty { text-align: center; color: #484f58; padding: 48px 16px; font-size: 14px; }
 #cameras {
@@ -246,23 +264,29 @@ function fmtCamera(cam) {
 }
 
 // Detailed token panel shown when the info button is toggled. Prefill and
-// Generation each show their phase time plus the tokens/sec rate for that phase:
-// prefill processes the input (prompt-eval), generation decodes the output. The
-// times come from streaming, so generation excludes prefill — dividing output
+// Decode each show their phase time plus the tokens/sec rate for that phase:
+// prefill processes the input (prompt-eval), decode generates the output. The
+// times come from streaming, so decode excludes prefill — dividing output
 // by the full inference time would fold prefill in and understate it badly for
-// image prompts.
+// image prompts. Reasoning is generated during decode, so it's already part of
+// the output tokens and the decode time; its share is surfaced inline when the
+// endpoint reports it.
 function renderTokens(e) {
   const inTok = e.input_tokens ?? 0;
   const outTok = e.output_tokens ?? 0;
   const phase = (secs, toks) => secs > 0
     ? `${secs.toFixed(2)}s <span class="rate">(${(toks / secs).toFixed(1)} tok/s)</span>`
     : `${secs.toFixed(2)}s`;
+  const rsn = e.reasoning_tokens;
+  const outVal = rsn != null
+    ? `${outTok.toLocaleString()} <span class="rate">(${rsn.toLocaleString()} reasoning)</span>`
+    : outTok.toLocaleString();
   const rows = [
     ['Input tokens', inTok.toLocaleString()],
-    ['Output tokens', outTok.toLocaleString()],
+    ['Output tokens', outVal],
   ];
   if (e.prefill_time != null) rows.push(['Prefill', phase(e.prefill_time, inTok)]);
-  if (e.generation_time != null) rows.push(['Generation', phase(e.generation_time, outTok)]);
+  if (e.generation_time != null) rows.push(['Decode', phase(e.generation_time, outTok)]);
   return `<div class="tokens">` + rows
     .map(([k, v]) => `<span>${k}</span><span class="tok-v">${v}</span>`)
     .join('') + `</div>`;
@@ -380,6 +404,11 @@ function addCard(e) {
     ? `<button class="info-btn" title="Token details" aria-label="Token details">ⓘ</button>`
     : '';
   const tokens = hasTokens ? renderTokens(e) : '';
+  const hasReasoning = !!(e.reasoning && e.reasoning.trim());
+  const reasonBtn = hasReasoning
+    ? `<button class="reason-btn" title="Show reasoning" aria-label="Show reasoning">⤢</button>`
+    : '';
+  const reasoning = hasReasoning ? `<div class="reasoning">${esc(e.reasoning)}</div>` : '';
   const summary = e.summary
     ? `<p class="summary">${esc(e.summary)}</p>`
     : '';
@@ -397,7 +426,8 @@ function addCard(e) {
       ${tokens}
       ${summary}
       ${detect}
-      <p class="desc">${esc(e.description)}</p>
+      <p class="desc">${esc(e.description)}${reasonBtn}</p>
+      ${reasoning}
     </div>`;
   const wrap = d.querySelector('.thumb-wrap');
   if (wrap) wrap.addEventListener('click', () => openModal(e.id, thumbs));
@@ -405,6 +435,11 @@ function addCard(e) {
   if (btn) btn.addEventListener('click', () => {
     btn.classList.toggle('open');
     d.querySelector('.tokens').classList.toggle('open');
+  });
+  const rbtn = d.querySelector('.reason-btn');
+  if (rbtn) rbtn.addEventListener('click', () => {
+    rbtn.classList.toggle('open');
+    d.querySelector('.reasoning').classList.toggle('open');
   });
   // Pin the scroll position: if the user has scrolled down, prepending a new
   // entry at the top would shove everything they're reading downward. Measure

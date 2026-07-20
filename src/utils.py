@@ -58,14 +58,19 @@ def select_boxes(
     return [max(scored, key=lambda item: item[1])[0]]
 
 
-def encode_frame(frame: np.ndarray) -> str:
+def encode_frame(
+    frame: np.ndarray,
+    max_width: int = _LLM_MAX_WIDTH,
+    max_height: int = _LLM_MAX_HEIGHT,
+) -> str:
     """
-    Encode a single frame to base64 in JPG. If the frame is larger than 
-    `_LLM_MAX_WIDTH` or `_LLM_MAX_HEIGHT`, it will be resized.
+    Encode a single frame to base64 in JPG. If the frame is larger than
+    `max_width` or `max_height`, it will be resized (aspect-preserving,
+    downscale only).
     """
     h, w = frame.shape[:2]
-    if w > _LLM_MAX_WIDTH or h > _LLM_MAX_HEIGHT:
-        scale = min(_LLM_MAX_WIDTH / w, _LLM_MAX_HEIGHT / h)
+    if w > max_width or h > max_height:
+        scale = min(max_width / w, max_height / h)
         frame = cv2.resize(
             frame, 
             (int(w * scale), int(h * scale)),

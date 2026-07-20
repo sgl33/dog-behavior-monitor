@@ -1,15 +1,116 @@
-#!/bin/bash
-src="$1"
-# Strip .json or .mp4 to get the base path
-base="${src%.json}"
-base="${base%.mp4}"
+#!/usr/bin/env python3
+"""Move a clip to data/reviewed/ and record a human label beside it.
 
-name="$(basename "$base")"
-if [ -n "$2" ]; then
-    name="${name/_score[0-9]*/_score$2}"
-fi
-dst="$(dirname "$base")/../reviewed/$name"
-mkdir -p "$(dirname "$dst")"
+The clip keeps its original filename, so the model's score stays readable from
+the name. The human label goes in a `<clip>.label.json` sidecar, which is what
+makes an accuracy metric possible: renaming the file would overwrite the
+prediction with the label and leave nothing to compare against.
 
-[ -f "$base.json" ] && mv "$base.json" "$dst.json"
-[ -f "$base.mp4" ] && mv "$base.mp4" "$dst.mp4"
+Usage:
+    ./review data/alerts/20260717_184253_score7.json          # confirm model was right
+    ./review data/alerts/20260717_184253_score7.json 2        # correct the score to 2
+    ./review data/alerts/20260717_184253_score7.json 2 -c MILD
+    ./review data/alerts/20260717_184253_score7.json 0 -c NOT_VISIBLE -n "dog bed, no dog"
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+# Score ranges from prompts/analyze_prompt.txt STEP 4. NOT_VISIBLE overlaps
+# NORMAL at 0, so it is never derived — pass -c NOT_VISIBLE explicitly.
+CATEGORY_RANGES = {
+    "NORMAL": (0, 1),
+    "MILD": (2, 3),
+    "BORDERLINE": (4, 5),
+    "CONCERN": (6, 7),
+    "HIGH": (8, 9),
+    "EMERGENCY": (10, 10),
+}
+CATEGORIES = ["NOT_VISIBLE", *CATEGORY_RANGES]
+
+
+def category_for(score: int) -> str:
+    for name, (lo, hi) in CATEGORY_RANGES.items():
+        if lo <= score <= hi:
+            return name
+    raise ValueError(f"no category covers score {score}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Record a human label for a saved clip.")
+    parser.add_argument("clip", type=Path, help="Path to the clip's .json or .mp4")
+    parser.add_argument(
+        "score", type=int, nargs="?",
+        help="True score 0-10. Omit to confirm the model's own score was correct.",
+    )
+    parser.add_argument("-c", "--category", choices=CATEGORIES, help="True category (default: derived from score)")
+    parser.add_argument("-n", "--note", default="", help="Free-text note, e.g. why the model got it wrong")
+    parser.add_argument("--reviewer", default=os.environ.get("USER", ""), help="Who reviewed it")
+    args = parser.parse_args()
+
+    base = args.clip.with_suffix("")
+    stem = base.name
+
+    m = re.search(r"_score(\d+)", stem)
+    if not m:
+        parser.error(f"{stem!r} has no _score<N> suffix — cannot tell what the model predicted")
+    model_score = int(m.group(1))
+
+    if args.score is None:
+        human_score = model_score
+    elif not 0 <= args.score <= 10:
+        parser.error("score must be between 0 and 10")
+    else:
+        human_score = args.score
+
+    category = args.category or category_for(human_score)
+    if category != "NOT_VISIBLE":
+        lo, hi = CATEGORY_RANGES[category]
+        if not lo <= human_score <= hi:
+            parser.error(f"score {human_score} is outside {category} ({lo}-{hi})")
+
+    reviewed_dir = base.parent.parent / "reviewed"
+    reviewed_dir.mkdir(parents=True, exist_ok=True)
+    dst = reviewed_dir / stem
+
+    # Relabeling a clip already in reviewed/ would otherwise record its source
+    # as "reviewed" and lose whether it started as an alert or a negative.
+    label_path = reviewed_dir / f"{stem}.label.json"
+    prior = json.loads(label_path.read_text()) if label_path.exists() else {}
+    source = prior.get("source") or base.parent.name
+
+    label = {
+        "clip": stem,
+        "model_score": model_score,
+        "human_score": human_score,
+        "human_category": category,
+        "confirmed": human_score == model_score,
+        "source": source,
+        "reviewed_at": datetime.now().isoformat(timespec="seconds"),
+        "reviewer": args.reviewer,
+        "note": args.note,
+    }
+
+    moved = []
+    for suffix in (".json", ".mp4"):
+        src = base.with_suffix(suffix)
+        if src.exists():
+            src.rename(dst.with_suffix(suffix))
+            moved.append(suffix)
+    if not moved and not dst.with_suffix(".json").exists():
+        print(f"error: no .json or .mp4 found at {base}", file=sys.stderr)
+        sys.exit(1)
+
+    label_path.write_text(json.dumps(label, indent=2) + "\n")
+
+    verdict = "confirmed" if label["confirmed"] else f"{model_score} -> {human_score}"
+    print(f"{'relabeled' if prior else 'reviewed'} {stem}: {verdict} ({category})")
+
+
+if __name__ == "__main__":
+    main()

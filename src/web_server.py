@@ -69,6 +69,8 @@ class WebServerClient:
         output_tokens: int | None = None,
         prefill_time: float | None = None,
         generation_time: float | None = None,
+        reasoning: str | None = None,
+        reasoning_tokens: int | None = None,
     ) -> None:
         """
         Push a single behavioral analysis result to the web server via HTTP.
@@ -90,7 +92,13 @@ class WebServerClient:
             prefill_time (float | None): Time-to-first-token in seconds (approx.
                 the prompt-eval/prefill phase).
             generation_time (float | None): Seconds spent generating output
-                tokens (first token to last), excluding prefill.
+                tokens (first token to last), excluding prefill. Includes the
+                reasoning trace when reasoning is on.
+            reasoning (str | None): The model's thinking trace, shown behind a
+                toggle in the web UI. None when reasoning is off.
+            reasoning_tokens (int | None): Reasoning's share of the output
+                tokens, when the endpoint reports it (folded into the decode
+                phase in the UI).
             clip_frames_by_camera (dict[str, list[np.ndarray]] | None): Sampled
                 frames grouped by camera. Each camera is compiled into its own
                 MP4 so the user gets one clip per source. The web server keeps
@@ -141,6 +149,8 @@ class WebServerClient:
                     "output_tokens": output_tokens,
                     "prefill_time": prefill_time,
                     "generation_time": generation_time,
+                    "reasoning": reasoning,
+                    "reasoning_tokens": reasoning_tokens,
                 },
                 timeout=5,
             ).raise_for_status()

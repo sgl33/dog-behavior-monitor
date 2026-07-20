@@ -107,13 +107,31 @@ llm_endpoint:
   crop_padding: 0.3
   # Fractional padding added around each YOLO bounding box before cropping.
 
-  max_tokens: 1024
-  # Max tokens the LLM may output. Increase if you get JSON decoding errors
-  # on reasoning models.
+  max_frame_width: 640
+  max_frame_height: 360
+  # Max size (px) of each frame sent to the vision LLM. Frames larger than this
+  # are downscaled (aspect-preserving, never upscaled) before encoding. Larger
+  # values give the model more detail at the cost of more tokens and slower
+  # prefill.
+
+  max_tokens: 256
+  # Max tokens the LLM may output, including reasoning.
+  # Recommended: reasoning_budget + 128
 
   temperature: 0
   # Sampling temperature for the vision/detection JSON-schema calls.
   # 0 = deterministic; raise for more varied output.
+  # For reasoning (reasoning_budget > 0), Qwen3 recommends ~0.6 rather than 0.
+
+  reasoning_budget: 0
+  # Hard thinking-token budget for the behavior-analysis pass (analyze), letting
+  # the vision LLM cross-reference the different camera angles before answering.
+  # 0 disables reasoning entirely (the detect/summary passes never reason).
+  # On vLLM this maps to the native `thinking_token_budget` param, which forces
+  # </think> at the budget — it REQUIRES the server's --reasoning-parser (qwen3).
+  # Keep it well under max_tokens, since reasoning + JSON share that budget.
+  # Hot-reloadable. Short budgets are experimental: a hard cut mid-thought can
+  # hurt quality, so A/B against 0 and watch latency (slow_threshold).
 
   cooldown: 1.0
   # Minimum seconds between one LLM call finishing and the next one starting.

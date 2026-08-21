@@ -15,6 +15,19 @@ services:
     ipc: host
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # depends_on ordering only applies when Compose starts the stack; after a
+    # host reboot the daemon's restart policy brings containers back
+    # independently, so gate on vLLM's /health here too. The image has no
+    # curl, so probe with python's stdlib.
+    command:
+      - sh
+      - -c
+      - |
+        until python -c 'import urllib.request as u; u.urlopen("http://host.docker.internal:${DOGDETECT_VLLM_PORT}/health", timeout=2)' 2>/dev/null; do
+          echo "waiting for vllm at host.docker.internal:${DOGDETECT_VLLM_PORT} ..."
+          sleep 10
+        done
+        exec python src/main.py
     # AMD GPU (ROCm):
     # devices:
     #   - /dev/kfd:/dev/kfd
@@ -24,7 +37,7 @@ services:
     #   - "991"  # render
     # security_opt:
     #   - seccomp:unconfined
-    # # Intel GPU (OpenVINO):
+    # Intel GPU (OpenVINO):
     # devices:
     #   - /dev/dri/renderD128:/dev/dri/renderD128
     # group_add:
@@ -35,10 +48,108 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0"]
+              device_ids: ["1"]
               capabilities: [gpu]
     depends_on:
-      - web
+      web:
+        condition: service_started
+      vllm:
+        condition: service_healthy
+    restart: unless-stopped
+
+  vllm:
+    image: vllm/vllm-openai:v0.25.1
+    # HUGGING_FACE_HUB_TOKEN lives here (llm/ is gitignored, so the token stays
+    # out of the repo).
+    env_file:
+      - ./llm/.env
+    environment:
+      # unsloth/Qwen3.6-35B-A3B-NVFP4-Fast ships the full vision-processor
+      # layout (preprocessor_config.json, video_preprocessor_config.json,
+      # chat_template.jinja), so none of the file-grafting the sakamakismile
+      # checkpoint needed applies here. One conflict remains: the repo still
+      # ships a processor_config.json declaring the SLOW Qwen2VLImageProcessor
+      # while preprocessor_config.json declares the Fast one -- the same
+      # image-grid / image-token-count mismatch as before. If image-token
+      # counts look off (~10% high), remove processor_config.json from the
+      # local HF cache to fall back to the Fast preprocessor_config.json.
+      # HF_HUB_OFFLINE is off because this checkpoint isn't downloaded yet;
+      # re-add `- HF_HUB_OFFLINE=1` once it's fully cached to pin local files.
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      # Two different cards (5070 Ti + 5060 Ti) split by pipeline parallel —
+      # pin device enumeration to PCI order so the layer split is stable across runs.
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      # device_ids above only picks WHICH cards are exposed, not their order --
+      # PCI_BUS_ID then enumerates the 5060 Ti (08:00.0) as cuda:0 and the
+      # 5070 Ti (45:00.0) as cuda:1. Remap so the faster 5070 Ti is rank 0,
+      # which holds the token embeddings + vision encoder.
+      - CUDA_VISIBLE_DEVICES=1,0
+      # Pipeline parallelism shards the model across the two GPUs by layer,
+      # so this container needs the whole of both cards. Don't enable CUDA MPS
+      # here — that's for sharing a single GPU with the YOLO detector, which
+      # doesn't apply when the LLM already owns both GPUs.
+      # PP split of the 40 transformer layers. Rank 0 (the 5070 Ti, per the
+      # CUDA_VISIBLE_DEVICES remap above) also holds token embeddings + the
+      # vision encoder; rank 1's KV-cache need is the binding constraint. Note
+      # the splits below were profiled with the ranks the OTHER way round. These splits were profiled against the LIGHTER sakamakismile
+      # checkpoint (18,22 / 19,21 left rank 1 with ≤0 / 0.26 GiB vs 0.46 GiB
+      # needed for 65535 tokens; 20,20 gave ~0.97/0.8 GiB free). This unsloth
+      # checkpoint is ~2 GB heavier (23.6 GB weights), which roughly wipes out
+      # that ~0.8 GiB headroom -- expect to re-tune on startup: if rank 1 OOMs,
+      # lower --max-model-len and/or --gpu-memory-utilization below. 20,20 is
+      # still the best-balanced split.
+      - VLLM_PP_LAYER_PARTITION=20,20
+      # Don't pre-reserve ~0.42 GiB/GPU for CUDA graph capture during memory
+      # profiling — both 16 GB cards need that for KV cache. Graph capture then
+      # eats into the ~0.5-1.6 GiB per-card headroom outside the 0.9 budget.
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+      - FLASHINFER_CUDA_ARCH_LIST=12.0f
+      - FLASHINFER_FORCE_SM=120f
+      - FLASHINFER_DISABLE_VERSION_CHECK=1
+    volumes:
+      - /home/sgl/.cache/huggingface:/root/.cache/huggingface
+      - /home/sgl/.cache/vllm:/root/.cache/vllm
+    ports:
+      - "${DOGDETECT_VLLM_PORT}:8000"
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1", "0"]
+              capabilities: [gpu]
+    command: >
+      unsloth/Qwen3.6-35B-A3B-NVFP4-Fast
+      --reasoning-parser qwen3
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --pipeline-parallel-size 2
+      --tensor-parallel-size 1
+      --distributed-executor-backend mp
+      --kv-cache-dtype fp8
+      --trust-remote-code
+      --max-model-len 96000
+      --gpu-memory-utilization 0.94
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --max-num-batched-tokens 2096
+      --max-num-seqs 4
+      --limit-mm-per-prompt '{"image": 256}'
+      --default-chat-template-kwargs '{"preserve_thinking": true}'
+      --override-generation-config '{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":1.5,"repetition_penalty":1.0}'
+    # /health only answers 200 once weights are loaded, the KV cache is
+    # profiled and the API server is serving — that's what `app` waits on.
+    # First run also downloads ~24 GB of weights, hence the long start_period;
+    # during it failures don't count against retries, so a warm start still
+    # flips to healthy within start_interval.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45m
+      start_interval: 10s
     restart: unless-stopped
 
   web:
@@ -47,5 +158,5 @@ services:
     volumes:
       - ./web:/app
     ports:
-      - "8972:8972"
+      - "${DOGDETECT_WEB_PORT}:8972"
     restart: unless-stopped

@@ -39,7 +39,7 @@ NOT_VISIBLE — no dog in any frame.
 
 NORMAL (score 0-1) — sleeping, resting, walking, stretching, grooming, eating or drinking from the dog's own bowls, or lying motionless in ANY position or spot. Twitching, leg movement, and odd postures while lying down are normal sleep.
 
-MILD (score 2-3) — pacing, intense sniffing with nothing picked up, or chewing or playing with an intact dog toy. Dog toys include plush/stuffed toys (teddy bears), rope toys, balls, squeaky toys, and chew bones. An intact plush toy is ALWAYS a toy — never "fabric", never an ingestion risk.
+MILD (score 2-3) — pacing, panting, intense sniffing with nothing picked up, or chewing or playing with an intact dog toy. Dog toys include plush/stuffed toys (teddy bears), rope toys, balls, squeaky toys, and chew bones. An intact plush toy is ALWAYS a toy — never "fabric", never an ingestion risk.
 
 BORDERLINE (score 4-5) — a confirmed non-toy object in the mouth that you cannot identify (say what it might be), or chewing or pawing at furniture without damage.
 
@@ -53,7 +53,7 @@ TIEBREAKER — If RESTLESS = true AND the current behavior sits at a boundary be
 - A clearly NORMAL final state (sleeping, resting, eating from own bowl) stays NORMAL regardless of earlier restlessness — but note the earlier restlessness in the description.
 - Restlessness alone must NEVER push a behavior from NORMAL or MILD up into BORDERLINE or higher. Pacing, circling, or fidgeting around an intact toy is still MILD. Escalate only when there is also a confirmed non-toy object or confirmed contact with a non-toy item; otherwise stay in the lower category and note the restlessness in the description.
 
-STEP 5 — Set the score from the category's range. The score MUST match the category, and the category MUST match the description. If the description says intact toy, resting, or normal play, the category is NORMAL and the score is 0-1 — no exceptions.
+STEP 5 — Set the score from the category's range. The score MUST match the category, and the category MUST match the description. If the description says resting, sleeping, or lying still, the category is NORMAL and the score is 0-1 — no exceptions. An intact dog toy is MILD, never higher: chewing a toy is not a hazard, but a dog already chewing is more likely to move on to something it shouldn't, so it does not sit at NORMAL either.
 
 PRECISION RULE — be strict about EVIDENCE, not about escalation.
 - Confirm the thing you are escalating on actually exists. An object must keep a consistent shape and move with the dog's head across multiple frames (STEP 3). If you cannot confirm it exists, there is no object, and it cannot raise the category.
@@ -64,7 +64,7 @@ PRECISION RULE — be strict about EVIDENCE, not about escalation.
 Also: judge only the dog's behavior. Ignore background clutter, mess, or objects the dog is not interacting with.
 
 EXAMPLES
-- "Lying in a playpen chewing an intact teddy bear plush toy. Normal play." → NORMAL, "chewing plush toy", 1
+- "Lying in a playpen chewing an intact teddy bear plush toy." → MILD, "chewing plush toy", 2
 - "Lying on its side by the window, legs twitching slightly. Normal sleep." → NORMAL, "sleeping on side", 0
 - "Lying on the rug with a dark patch near its muzzle that shifts shape between frames and does not move with the head. No object confirmed." → NORMAL, "resting on rug", 0
 - "Asleep on the floor with its chin resting against a shoe, not mouthing or chewing it." → NORMAL, "asleep beside shoe", 1

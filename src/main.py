@@ -42,7 +42,7 @@ def ensure_model_exported(config: Config) -> None:
     YOLO(config.yolo_source_model).export(
         format="openvino",
         imgsz=config.yolo_image_size,
-        int8=True,
+        quantize=8,
         data="coco8.yaml",
     )
     logger.info("Export complete.")
@@ -90,7 +90,7 @@ def init_yolo(config: Config) -> YOLO:
         device=config.yolo_device,
         conf=config.yolo_confidence,
         imgsz=config.yolo_image_size,
-        half=True,
+        quantize=16,
         verbose=False,
     )
     return model

@@ -153,7 +153,7 @@ class Detector(threading.Thread):
         with self._model_lock:
             results = self._model.predict(
                 frame, device=self._device, conf=self._confidence,
-                imgsz=self._image_size, half=True, verbose=False
+                imgsz=self._image_size, quantize=16, verbose=False
             )
         boxes = results[0].boxes
         scored_dogs = [
